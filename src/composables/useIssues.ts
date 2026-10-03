@@ -91,13 +91,20 @@ export function useIssues(options: UseIssuesOptions = {}) {
 
   const paginatedIds = computed<string[]>(() => paginatedIssues.value.map((issue) => issue.id));
 
-  const summary = computed(() => ({
-    total: issues.value.length,
-    filtered: sortedIssues.value.length,
-    unresolved: issues.value.filter((issue) => issue.status === 'unresolved').length,
-    events: issues.value.reduce((sum, issue) => sum + issue.event_count, 0),
-    users: new Set(issues.value.flatMap((issue) => issue.unique_users)).size
-  }));
+  /**
+   * List metrics. `filtered` scoped figures describe what is on screen; only
+   * `total` and `unresolved` intentionally describe the whole registry.
+   */
+  const summary = computed(() => {
+    const scoped = sortedIssues.value;
+    return {
+      total: issues.value.length,
+      filtered: scoped.length,
+      unresolved: issues.value.filter((issue) => issue.status === 'unresolved').length,
+      events: scoped.reduce((sum, issue) => sum + issue.event_count, 0),
+      users: new Set(scoped.flatMap((issue) => issue.unique_users)).size
+    };
+  });
 
   // Any criteria change resets pagination to the first page.
   watch(

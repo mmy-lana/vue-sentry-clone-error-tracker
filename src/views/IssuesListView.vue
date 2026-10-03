@@ -124,13 +124,13 @@ function openIssue(issueId: string): void {
           label="Events"
           :value="summary.events"
           tone="info"
-          hint="Sum of events across all issues"
+          hint="Events behind the current filters"
         />
         <IssueStatsCard
           label="Affected users"
           :value="summary.users"
           tone="warning"
-          :hint="`${summary.filtered} match the current filters`"
+          :hint="`Distinct users across ${summary.filtered} matching issues`"
         />
       </section>
 

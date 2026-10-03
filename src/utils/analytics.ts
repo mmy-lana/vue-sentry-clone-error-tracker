@@ -1,4 +1,5 @@
 import type { StackFrame, HourlyBucket, IssueStatus, ErrorLevel } from '../types';
+import { HOUR_MS, floorToHour } from './date';
 
 const FNV_OFFSET_BASIS_64 = 0xcbf29ce484222325n;
 const FNV_PRIME_64 = 0x100000001b3n;
@@ -43,21 +44,27 @@ export function calculate24HourBuckets(
   eventTimestamps: number[],
   baseTimestamp: number = Date.now()
 ): HourlyBucket[] {
-  const ONE_HOUR = 3600000;
-  const startTimestamp = baseTimestamp - 24 * ONE_HOUR;
+  const anchor = Number.isFinite(baseTimestamp) && baseTimestamp > 0 ? baseTimestamp : Date.now();
+
+  // Anchored to the current hour boundary so bucket edges stay stable across
+  // renders instead of sliding by milliseconds on every call.
+  const startTimestamp = floorToHour(anchor) - 23 * HOUR_MS;
   const buckets: HourlyBucket[] = [];
 
-  for (let i = 0; i < 24; i++) {
+  for (let index = 0; index < 24; index += 1) {
     buckets.push({
-      hour_timestamp: startTimestamp + i * ONE_HOUR,
+      hour_timestamp: startTimestamp + index * HOUR_MS,
       count: 0
     });
   }
 
   for (const timestamp of eventTimestamps) {
-    if (timestamp >= startTimestamp && timestamp <= baseTimestamp) {
-      const bucketIndex = Math.min(23, Math.max(0, Math.floor((timestamp - startTimestamp) / ONE_HOUR)));
-      buckets[bucketIndex].count++;
+    if (timestamp >= startTimestamp && timestamp <= anchor) {
+      const bucketIndex = Math.min(
+        23,
+        Math.max(0, Math.floor((timestamp - startTimestamp) / HOUR_MS))
+      );
+      buckets[bucketIndex].count += 1;
     }
   }
 

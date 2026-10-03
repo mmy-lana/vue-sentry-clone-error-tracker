@@ -24,21 +24,24 @@ interface TagRow {
 
 const rows = computed<TagRow[]>(() => {
   const entries = Object.entries(props.tagsSummary ?? {});
-  const maxCount = entries.reduce(
-    (max, [, values]) =>
-      Math.max(max, ...Object.values(values).map((count) => Number(count) || 0)),
-    0
-  );
-
   const flattened: TagRow[] = [];
+
   for (const [key, values] of entries) {
+    // Shares are relative to this key's own event total: a browser
+    // distribution and an OS distribution are independent dimensions and must
+    // not be normalised against a global maximum.
+    const keyTotal = Object.values(values).reduce(
+      (sum, count) => sum + (Number(count) || 0),
+      0
+    );
+
     for (const [value, rawCount] of Object.entries(values)) {
       const count = Number(rawCount) || 0;
       flattened.push({
         key,
         value,
         count,
-        share: maxCount > 0 ? Math.round((count / maxCount) * 100) : 0
+        share: keyTotal > 0 ? Math.round((count / keyTotal) * 100) : 0
       });
     }
   }

@@ -176,12 +176,13 @@ onBeforeUnmount(() => {
                   size="xs"
                 />
                 <BaseBadge
-                  v-for="(tag, key) in Object.entries(event.tags).slice(0, 2)"
-                  :key="key"
+                  v-for="([tagKey, tagValue], tagIndex) in Object.entries(event.tags).slice(0, 2)"
+                  :key="`${tagKey}-${tagIndex}`"
                   tone="neutral"
-                  :label="`${key}:${tag}`"
+                  :label="`${tagKey}:${tagValue}`"
                   size="sm"
                   hide-dot
+                  data-testid="stream-tag"
                 />
               </div>
             </li>

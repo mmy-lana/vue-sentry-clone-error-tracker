@@ -1,4 +1,4 @@
-import { computed, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 import type { LocationQuery } from 'vue-router';
 import { router } from '../router';
@@ -74,7 +74,14 @@ export const useFilterStore = defineStore('filter', () => {
     availableEnvironments.value = [...environments].sort((a, b) => a.localeCompare(b));
   }
 
-  /** Reads the URL into the criteria without echoing a replace back to the URL. */
+  /**
+   * Reads the URL into the criteria without echoing a replace back to the URL.
+   *
+   * The deep watcher is flushed asynchronously on the next tick, so the
+   * hydration guard is released in `nextTick()`; clearing it synchronously let
+   * the watcher observe the hydrated criteria and replace the route it had just
+   * consumed, polluting the history stack.
+   */
   function syncFromQueryParams(query: LocationQuery): void {
     isHydrating.value = true;
     try {
@@ -99,7 +106,9 @@ export const useFilterStore = defineStore('filter', () => {
 
       criteria.value = next;
     } finally {
-      isHydrating.value = false;
+      void nextTick(() => {
+        isHydrating.value = false;
+      });
     }
   }
 

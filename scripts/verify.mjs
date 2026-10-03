@@ -350,6 +350,36 @@ async function injectIssue(page, payload) {
   );
 }
 
+
+/** Reads every issue with its rollup counters for aggregate assertions. */
+async function readIssueRows(page) {
+  return page.evaluate(
+    () =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const request = indexedDB.open('vue_sentry_clone_db');
+        request.onerror = () => rejectPromise(new Error('failed to open database'));
+        request.onsuccess = () => {
+          const database = request.result;
+          const tx = database.transaction('issues', 'readonly');
+          const all = tx.objectStore('issues').getAll();
+          all.onsuccess = () => {
+            database.close();
+            resolvePromise(
+              all.result.map((issue) => ({
+                id: issue.id,
+                status: issue.status,
+                event_count: issue.event_count,
+                histogram: issue.histogram_24h.map((bucket) => bucket.hour_timestamp),
+                tags_summary: issue.tags_summary
+              }))
+            );
+          };
+          all.onerror = () => rejectPromise(all.error);
+        };
+      })
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Suite definitions                                                    */
 /* ------------------------------------------------------------------ */
@@ -1309,6 +1339,112 @@ const suites = {
     await page.waitForSelector('[data-testid="settings-view"]');
     await context.settle();
     await context.shot('phase5-settings');
+  },
+
+
+  async logic(page, context) {
+    context.step('STATE-02: URL hydration never rewrites the route it consumed');
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
+    const historyBefore = await page.evaluate(() => window.history.length);
+    await gotoRoute(page, '/issues?status=resolved&range=168');
+    await page.waitForSelector('[data-testid="issues-view"]', { timeout: 15_000 });
+    const historyAfterLoad = await page.evaluate(() => window.history.length);
+    await sleep(700);
+    const historyAfterSettle = await page.evaluate(() => window.history.length);
+    assertEqual(
+      historyAfterSettle,
+      historyAfterLoad,
+      'no route replacement is pushed while the filter store hydrates'
+    );
+    assert(historyBefore <= historyAfterLoad, 'the document load itself is a navigation');
+
+    const hydratedSearch = await page.evaluate(() => window.location.search);
+    assert(
+      hydratedSearch.includes('status=resolved') && hydratedSearch.includes('range=168'),
+      `hydrated parameters survive untouched (got "${hydratedSearch}")`
+    );
+    const statusTrigger = await page.$eval('[data-testid="status-filter"] button', (el) => el.textContent ?? '');
+    assert(statusTrigger.includes('Resolved'), `hydration reached the criteria (got "${statusTrigger.trim()}")`);
+
+    context.step('METRIC-01: list metrics describe the filtered set');
+    const issueRows = await readIssueRows(page);
+    const expectedEvents = issueRows
+      .filter((issue) => issue.status === 'resolved')
+      .reduce((sum, issue) => sum + issue.event_count, 0);
+    const summaryText = await textOf(page, '[data-testid="issues-summary"]');
+    const eventsMatch = summaryText.match(/(\d+)\s+events in range/);
+    assert(eventsMatch, `issues summary exposes the in-range event count (got "${summaryText.trim()}")`);
+    assertEqual(
+      Number(eventsMatch[1]),
+      expectedEvents,
+      'in-range events equal the sum over the filtered issues only'
+    );
+    const globalEvents = issueRows.reduce((sum, issue) => sum + issue.event_count, 0);
+    if (expectedEvents !== globalEvents) {
+      assert(
+        Number(eventsMatch[1]) !== globalEvents,
+        'the metric is not the global total'
+      );
+    }
+
+    context.step('CALC-01: histogram buckets are aligned to hour boundaries');
+    const misaligned = issueRows.filter((issue) =>
+      issue.histogram.some((hourTimestamp) => hourTimestamp % 3600000 !== 0)
+    );
+    assertEqual(misaligned.length, 0, `all bucket anchors are hour aligned (got ${JSON.stringify(misaligned.slice(0, 2))})`);
+    const wrongLength = issueRows.filter((issue) => issue.histogram.length !== 24);
+    assertEqual(wrongLength.length, 0, 'histograms keep 24 buckets');
+
+    context.step('DATA-03: tag shares are relative to their own key');
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="tags-table"]', { timeout: 15_000 });
+    const shares = await page.$$eval('[data-testid="tags-table"] tbody tr', (rows) =>
+      rows.map((row) => {
+        const cells = row.querySelectorAll('td');
+        return {
+          key: (cells[0]?.textContent ?? '').trim(),
+          value: (cells[1]?.textContent ?? '').trim(),
+          share: Number((cells[2]?.textContent ?? '').replace('%', '').trim()) || 0
+        };
+      })
+    );
+    assert(shares.length > 0, 'tag distribution rows are rendered');
+
+    const byKey = new Map();
+    for (const row of shares) {
+      const bucket = byKey.get(row.key) ?? [];
+      bucket.push(row);
+      byKey.set(row.key, bucket);
+    }
+    assert(byKey.size >= 2, `multiple tag keys are rendered (got ${byKey.size})`);
+    for (const [key, rowsOfKey] of byKey) {
+      const sum = rowsOfKey.reduce((total, row) => total + row.share, 0);
+      assert(
+        Math.abs(sum - 100) <= 5,
+        `shares for "${key}" sum to ~100% (got ${sum}% across ${JSON.stringify(rowsOfKey)})`
+      );
+    }
+
+    context.step('UI-01: live stream tag badges are labelled key:value');
+    await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="stream-row"]', { timeout: 15_000 });
+    const badgeLabels = await page.$$eval('[data-testid="stream-tag"]', (nodes) =>
+      nodes.map((node) => node.getAttribute('title') ?? node.textContent?.trim() ?? '')
+    );
+    assert(badgeLabels.length > 0, 'stream rows expose tag badges');
+    for (const label of badgeLabels) {
+      assert(/^\w+:/.test(label), `tag badge uses key:value form (got "${label}")`);
+      assert(!/^\d+:/.test(label), `tag badge has no tuple index prefix (got "${label}")`);
+    }
+    const streamText = await page.evaluate(
+      () => document.querySelector('[data-testid="stream-feed"]')?.textContent ?? ''
+    );
+    assert(!/\d+:(environment|browser|os|release),/.test(streamText), 'no comma-joined tuple output in the feed');
+    assert(/environment:production|environment:staging|environment:development/.test(streamText), 'tag values render as key:value');
+
+    await context.settle();
+    await context.shot('logic-audit');
   },
 
   async security(page, context) {
