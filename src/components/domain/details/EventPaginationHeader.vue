@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import type { ErrorLevel } from '../../../types';
 import { formatAbsoluteDateTime, formatRelativeTime } from '../../../utils/date';
 import BaseBadge from '../../ui/BaseBadge.vue';
 import BaseButton from '../../ui/BaseButton.vue';
@@ -9,7 +10,7 @@ interface Props {
   index: number;
   total: number;
   timestamp: number;
-  level?: string;
+  level?: ErrorLevel;
   isNewest?: boolean;
   isOldest?: boolean;
 }
@@ -39,7 +40,7 @@ const absolute = computed<string>(() => formatAbsoluteDateTime(props.timestamp))
     data-testid="event-pagination-header"
   >
     <div class="flex min-w-0 items-center gap-2">
-      <BaseBadge v-if="level" :tone="level as never" size="sm" />
+      <BaseBadge v-if="level" :tone="level" size="sm" />
       <div class="min-w-0">
         <p class="truncate text-sm font-medium text-slate-100">{{ label }}</p>
         <p class="truncate text-[11px] text-slate-500" :title="absolute">

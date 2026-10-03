@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, useAttrs, watch } from 'vue';
 
 interface Props {
   isOpen: boolean;
@@ -33,6 +33,10 @@ const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 const dialogRef = ref<HTMLDivElement | null>(null);
+
+// The component root is a Teleport, so fallthrough attributes are bound to the
+// dialog panel explicitly (keeps `data-testid` and ARIA hints on the dialog).
+const attrs = useAttrs();
 let previouslyFocused: HTMLElement | null = null;
 
 function focusableElements(): HTMLElement[] {
@@ -113,6 +117,7 @@ onBeforeUnmount(() => {
       @click.self="!persistent && emit('close')"
     >
       <div
+        v-bind="attrs"
         ref="dialogRef"
         role="dialog"
         aria-modal="true"

@@ -89,6 +89,22 @@ function startPreviewServer() {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+/**
+ * Resizes the viewport and waits for two animation frames so the media-query
+ * layout, the Vue `useBreakpoints` state and the overflow measurement all see
+ * the same geometry before assertions run.
+ */
+async function setViewport(page, width, height, deviceScaleFactor = 1) {
+  await page.setViewport({ width, height, deviceScaleFactor });
+  await page.evaluate(
+    () =>
+      new Promise((done) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => done(null)));
+      })
+  );
+  await sleep(120);
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(`ASSERTION FAILED: ${message}`);
 }
@@ -366,17 +382,28 @@ const suites = {
     assert(focusRestored, 'focus returns to the trigger after closing');
 
     // No horizontal overflow on the narrowest supported viewport.
-    await page.setViewport({ width: 360, height: 780, deviceScaleFactor: 1 });
+    await setViewport(page, 360, 780, 1);
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth
     );
     if (overflow > 1) {
       const offenders = await overflowingElements(page);
+      const context = await page.evaluate(() => ({
+        bodyWidth: document.body.scrollWidth,
+        bodyChildren: Array.from(document.body.children).map((node) => ({
+          tag: node.tagName.toLowerCase(),
+          width: Math.round(node.getBoundingClientRect().width),
+          scrollWidth: node.scrollWidth
+        })),
+        openDialogs: document.querySelectorAll('[role="dialog"]').length,
+        openPanels: document.querySelectorAll('[role="listbox"]').length,
+        bodyOverflowStyle: document.body.style.overflow
+      }));
       throw new Error(
-        `ASSERTION FAILED: gallery has no horizontal overflow at 360px (overflow ${overflow}px)\n  ${offenders.join('\n  ')}`
+        `ASSERTION FAILED: gallery has no horizontal overflow at 360px (overflow ${overflow}px)\n  ${JSON.stringify(context)}\n  ${offenders.join('\n  ')}`
       );
     }
-    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await setViewport(page, 1440, 900, 1);
     await gotoRoute(page, '/ui-kit');
     await context.shot('phase2-gallery');
   },
@@ -418,7 +445,7 @@ const suites = {
 
     context.step('bulk bar viewport');
     // Bulk bar stays inside the viewport on the narrowest supported width.
-    await page.setViewport({ width: 360, height: 780, deviceScaleFactor: 1 });
+    await setViewport(page, 360, 780, 1);
     const bulkBounds = await page.$eval('[data-testid="issue-bulk-bar"] > div', (el) => {
       const rect = el.getBoundingClientRect();
       return { left: rect.left, right: rect.right, width: window.innerWidth };
@@ -427,7 +454,7 @@ const suites = {
       bulkBounds.left >= 0 && bulkBounds.right <= bulkBounds.width + 1,
       `bulk bar fits the viewport at 360px (${JSON.stringify(bulkBounds)})`
     );
-    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await setViewport(page, 1440, 900, 1);
 
     context.step('filter search bar');
     // Search bar filters and applies operator suggestions.
@@ -567,12 +594,12 @@ const suites = {
 
     await gotoRoute(page, '/ui-kit');
     await page.waitForSelector('[data-testid="issue-harness"]');
-    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+    await setViewport(page, 390, 844, 1);
     await gotoRoute(page, '/ui-kit');
     await page.waitForSelector('[data-issue-row]');
     await context.settle();
     await context.shot('phase3-mobile');
-    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await setViewport(page, 1440, 900, 1);
     await gotoRoute(page, '/ui-kit');
     await page.waitForSelector('[data-issue-row]');
     await context.settle();
@@ -703,7 +730,7 @@ const suites = {
       });
       assert(viewportClass === expected, `viewport ${width}px classified as ${expected} (got ${viewportClass})`);
     }
-    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await setViewport(page, 1440, 900, 1);
     await sleep(200);
 
     context.step('deleting the issue removes its events');
@@ -730,68 +757,326 @@ const suites = {
 
   async phase5(page, context) {
     const viewports = [
-      { name: '360', width: 360, height: 780 },
-      { name: '390', width: 390, height: 844 },
-      { name: '430', width: 430, height: 932 },
-      { name: '768', width: 768, height: 1024 },
-      { name: '1280', width: 1280, height: 900 }
+      { name: '360', width: 360, height: 780, sidebar: 'hidden' },
+      { name: '390', width: 390, height: 844, sidebar: 'hidden' },
+      { name: '430', width: 430, height: 932, sidebar: 'hidden' },
+      { name: '768', width: 768, height: 1024, sidebar: 'rail' },
+      { name: '1280', width: 1280, height: 900, sidebar: 'full' }
     ];
+
+    async function assertNoOverflow(label) {
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+      );
+      if (overflow > 1) {
+        const offenders = await overflowingElements(page);
+        throw new Error(
+          `ASSERTION FAILED: ${label} overflows horizontally by ${overflow}px\n  ${offenders.join('\n  ')}`
+        );
+      }
+    }
+
+    context.step('responsive shell across the breakpoint matrix');
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
 
     for (const viewport of viewports) {
       await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
       await gotoRoute(page, '/issues');
+      await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
 
-      const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+      await assertNoOverflow(`issues list at ${viewport.name}px`);
+
+      const sidebarMode = await page.evaluate(() => {
+        const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+        return sidebar ? sidebar.getAttribute('data-mode') : 'hidden';
+      });
+      assertEqual(sidebarMode, viewport.sidebar, `sidebar mode at ${viewport.name}px`);
+
+      const mobileNav = await page.evaluate(() => {
+        const nav = document.querySelector('[data-testid="mobile-nav"]');
+        return nav ? getComputedStyle(nav).display !== 'none' : false;
+      });
+      assertEqual(
+        mobileNav,
+        viewport.width < 768,
+        `bottom navigation visibility at ${viewport.name}px`
       );
-      assert(overflow <= 1, `no horizontal overflow at ${viewport.name}px (overflow ${overflow}px)`);
+
+      const rowCount = await countRows(page, '[data-issue-row]');
+      assert(rowCount > 0, `issue rows render at ${viewport.name}px`);
+
+      // Tap targets on touch widths must clear the 44px minimum.
+      if (viewport.width < 768) {
+        const tooSmall = await page.$$eval('[data-testid="mobile-nav-link"]', (nodes) =>
+          nodes
+            .map((node) => node.getBoundingClientRect().height)
+            .filter((height) => height > 0 && height < 44)
+        );
+        assertEqual(tooSmall.length, 0, `navigation tap targets at ${viewport.name}px`);
+      }
+
+      await context.settle();
       await context.shot(`phase5-issues-${viewport.name}`);
     }
 
-    await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
-    const issueId = await page.evaluate(
+    context.step('bulk action bar stays inside the viewport');
+    await setViewport(page, 360, 780, 1);
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row]');
+    await page.evaluate(() => {
+      document.querySelector('[data-issue-row] input[type="checkbox"]')?.click();
+    });
+    await page.waitForSelector('[data-testid="issue-bulk-bar"]', { timeout: 5000 });
+    const bulkBounds = await page.$eval('[data-testid="issue-bulk-bar"] > div', (el) => {
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: window.innerWidth };
+    });
+    assert(
+      bulkBounds.left >= 0 && bulkBounds.right <= bulkBounds.width + 1,
+      `bulk bar fits at 360px (${JSON.stringify(bulkBounds)})`
+    );
+    await page.evaluate(() => {
+      const clear = Array.from(document.querySelectorAll('[data-testid="issue-bulk-bar"] button')).find(
+        (node) => (node.getAttribute('aria-label') ?? '') === 'Clear selection'
+      );
+      clear?.click();
+    });
+
+    context.step('mobile navigation drawer');
+    await page.click('[data-testid="drawer-toggle"]');
+    await page.waitForSelector('[data-testid="app-sidebar"]', { timeout: 5000 });
+    assert(await page.$('[data-testid="sidebar-backdrop"]'), 'drawer renders a backdrop');
+    const drawerLinkCount = await countRows(page, '[data-testid="sidebar-link"]');
+    assert(drawerLinkCount >= 3, `drawer lists the navigation (got ${drawerLinkCount})`);
+    await page.click('[data-testid="sidebar-close"]');
+    await page.waitForFunction(() => document.querySelector('[data-testid="app-sidebar"]') === null, {
+      timeout: 5000
+    });
+    await setViewport(page, 1280, 900, 1);
+
+    context.step('filters drive the URL and the result set');
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row]');
+
+    context.step('open status dropdown');
+    await page.click('[data-testid="status-filter"] button');
+    await page.waitForSelector('[data-testid="status-filter"] [role="option"]', { timeout: 5000 });
+    await page.evaluate(() => {
+      const option = Array.from(
+        document.querySelectorAll('[data-testid="status-filter"] [role="option"]')
+      ).find((node) => (node.textContent ?? '').includes('Any status'));
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    context.step('status facet reaches the URL');
+    // "Any status" is the default, so the serialised query must drop `status`.
+    await page.waitForFunction(() => !window.location.search.includes('status='), { timeout: 5000 });
+    const urlAfterFacet = await page.evaluate(() => window.location.search);
+    assert(!urlAfterFacet.includes('status='), `status facet is serialised (got "${urlAfterFacet}")`);
+
+    context.step('search query reaches the URL');
+    await page.type('[data-testid="issues-view"] input[type="search"]', 'level:fatal');
+    await page.waitForFunction(() => window.location.search.includes('q=level'), { timeout: 5000 });
+
+    await gotoRoute(page, '/issues?status=resolved');
+    await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
+    const criteriaText = await page.$eval('[data-testid="status-filter"] button', (el) => el.textContent ?? '');
+    assert(criteriaText.includes('Resolved'), `URL hydrates the status facet (got "${criteriaText.trim()}")`);
+    const resolvedSummary = await textOf(page, '[data-testid="issues-summary"]');
+    assert(/^1 of \d+ issues/.test(resolvedSummary.trim()), `resolved filter narrows the list (got "${resolvedSummary.trim()}")`);
+
+    await gotoRoute(page, '/issues?level=fatal');
+    await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
+    const levelText = await page.$eval('[data-testid="level-filter"] button', (el) => el.textContent ?? '');
+    assert(levelText.includes('Fatal'), `URL hydrates the level facet (got "${levelText.trim()}")`);
+
+    context.step('empty state for unmatched query');
+    await page.evaluate(() => {
+      const input = document.querySelector('[data-testid="issues-view"] input[type="search"]');
+      if (input) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(input, 'no-such-issue-xyz');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await page.waitForFunction(
+      () => (document.body.textContent ?? '').includes('No issues match these filters'),
+      { timeout: 5000 }
+    );
+    await page.click('[data-testid="reset-filters"]');
+    await page.waitForSelector('[data-issue-row]', { timeout: 10_000 });
+
+    context.step('issue detail, stepper and resolution toolbar');
+    const firstIssueId = await page.$eval('[data-issue-row]', (el) => el.getAttribute('data-issue-id'));
+    assert(firstIssueId, 'issue row exposes its id');
+    await gotoRoute(page, `/issues/${firstIssueId}`);
+    await page.waitForSelector('[data-testid="issue-detail-view"]', { timeout: 15_000 });
+    await page.waitForSelector('[data-frame-id]', { timeout: 15_000 });
+
+    const detailText = await textOf(page, '[data-testid="issue-detail-view"]');
+    for (const label of ['Stack trace', 'Breadcrumbs', 'Tag distribution', 'Event context']) {
+      assert(detailText.includes(label), `detail view renders "${label}"`);
+    }
+
+    await page.click('[data-testid="event-pagination-header"] button[aria-label="Next event"]');
+    await page.waitForFunction(
       () =>
-        new Promise((resolvePromise) => {
-          const request = indexedDB.open('vue_sentry_clone_db');
-          request.onsuccess = () => {
-            const db = request.result;
-            const tx = db.transaction('issues', 'readonly');
-            const store = tx.objectStore('issues');
-            const cursorRequest = store.openCursor();
-            cursorRequest.onsuccess = () => {
-              const cursor = cursorRequest.result;
-              if (cursor) {
-                db.close();
-                resolvePromise(cursor.value.id);
-              } else {
-                db.close();
-                resolvePromise(null);
-              }
-            };
-          };
-        })
+        (document.querySelector('[data-testid="event-pagination-header"]')?.textContent ?? '').includes(
+          'Event 2 of'
+        ),
+      { timeout: 5000 }
     );
 
-    assert(issueId, 'at least one issue exists for the detail route');
-    await gotoRoute(page, `/issues/${issueId}`);
-    const detailText = await page.evaluate(() => document.body.textContent ?? '');
-    assert(detailText.includes('Stack'), 'detail view renders the stack trace section');
-    await context.shot('phase5-detail-desktop');
+    await page.click('[data-testid="toggle-in-app"]');
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="toggle-in-app"]')?.textContent ?? '').includes('Show all frames'),
+      { timeout: 5000 }
+    );
+    await page.click('[data-testid="toggle-in-app"]');
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="toggle-in-app"]')?.textContent ?? '').includes('In-app only'),
+      { timeout: 5000 }
+    );
+
+    await page.click('[data-testid="resolve-issue"]');
+    await page.waitForFunction(
+      () => (document.body.textContent ?? '').includes('Reopen'),
+      { timeout: 10_000 }
+    );
+    await page.click('[data-testid="unresolve-issue"]');
+    await page.waitForFunction(
+      () => (document.body.textContent ?? '').includes('Resolve'),
+      { timeout: 10_000 }
+    );
 
     for (const viewport of viewports) {
       await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
-      await gotoRoute(page, `/issues/${issueId}`);
-      const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-      );
-      assert(overflow <= 1, `detail view has no horizontal overflow at ${viewport.name}px`);
+      await gotoRoute(page, `/issues/${firstIssueId}`);
+      await page.waitForSelector('[data-frame-id]', { timeout: 15_000 });
+      await assertNoOverflow(`issue detail at ${viewport.name}px`);
+      await context.settle();
       await context.shot(`phase5-detail-${viewport.name}`);
     }
 
-    await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
+    await setViewport(page, 1280, 900, 1);
+
+    context.step('live stream ingestion');
     await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="stream-feed"]', { timeout: 15_000 });
+    const rowsBefore = await countRows(page, '[data-testid="stream-row"]');
+    assert(rowsBefore > 0, `live stream shows stored events (got ${rowsBefore})`);
+    const headBefore = await page.$eval('[data-testid="stream-row"]', (el) => el.textContent ?? '');
+    await page.click('[data-testid="stream-emit"]');
+    await page.waitForFunction(
+      (previous) =>
+        (document.querySelector('[data-testid="stream-row"]')?.textContent ?? '') !== previous,
+      { timeout: 10_000 },
+      headBefore
+    );
+
+    await page.click('[data-testid="stream-pause"]');
+    await page.waitForFunction(
+      () => (document.body.textContent ?? '').includes('Feed paused'),
+      { timeout: 5000 }
+    );
+    await page.click('[data-testid="stream-open-log"]');
+    await page.waitForSelector('[data-testid="ingestion-drawer"]', { timeout: 5000 });
+    const logEntries = await countRows(page, '[data-testid="ingestion-entry"]');
+    assert(logEntries > 0, `ingestion log lists entries (got ${logEntries})`);
+    await context.settle();
+    await context.shot('phase5-stream-drawer');
+    await page.evaluate(() => {
+      const close = Array.from(document.querySelectorAll('[data-testid="ingestion-drawer"] button')).find(
+        (node) => (node.textContent ?? '').trim() === 'Close'
+      );
+      close?.click();
+    });
+    await page.waitForFunction(() => document.querySelector('[data-testid="ingestion-drawer"]') === null, {
+      timeout: 5000
+    });
+
+    context.step('simulator modal from the header');
+    await page.click('[data-testid="open-simulator"]');
+    await page.waitForSelector('[data-testid="simulator-modal"]', { timeout: 5000 });
+    const emittedBefore = await textOf(page, '[data-testid="simulator-emitted"]');
+    await page.click('[data-testid="simulator-emit"]');
+    await page.waitForFunction(
+      (previous) =>
+        (document.querySelector('[data-testid="simulator-emitted"]')?.textContent ?? '').trim() !==
+        previous.trim(),
+      { timeout: 10_000 },
+      emittedBefore
+    );
+
+    await page.evaluate(() => {
+      const textarea = document.querySelector('[data-testid="simulator-json"]');
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, '{ not json ');
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await page.click('[data-testid="simulator-submit"]');
+    await page.waitForSelector('[data-testid="simulator-json-error"]', { timeout: 5000 });
+    await page.evaluate(() => {
+      const textarea = document.querySelector('[data-testid="simulator-json"]');
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(
+          textarea,
+          JSON.stringify({ level: 'fatal', message: 'headless payload', culprit: 'verify/suite' })
+        );
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
+    await page.click('[data-testid="simulator-submit"]');
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="simulator-json-error"]') === null,
+      { timeout: 10000 }
+    );
+    await context.settle();
+    await context.shot('phase5-simulator');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('[data-testid="simulator-modal"]') === null, {
+      timeout: 5000
+    });
+
+    context.step('settings persistence and storage tab');
+    await gotoRoute(page, '/settings');
+    await page.waitForSelector('[data-testid="settings-view"]', { timeout: 15_000 });
+    await page.click('[data-testid="settings-save"]');
+    await page.waitForFunction(
+      () => (document.body.textContent ?? '').includes('Saved to IndexedDB'),
+      { timeout: 5000 }
+    );
+    await page.evaluate(() => {
+      const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((node) =>
+        (node.textContent ?? '').includes('Storage')
+      );
+      tab?.click();
+    });
+    await page.waitForSelector('[data-testid="storage-issues"]', { timeout: 5000 });
+    const storageIssues = await textOf(page, '[data-testid="storage-issues"]');
+    assert(Number(storageIssues.replace(/[^0-9]/g, '')) > 0, `storage stats populated (got "${storageIssues}")`);
+    await page.click('[data-testid="settings-reset"]');
+    await page.waitForSelector('[data-testid="settings-confirm"]', { timeout: 5000 });
+    await page.keyboard.press('Escape');
+
+    for (const viewport of viewports) {
+      await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
+      await gotoRoute(page, '/settings');
+      await page.waitForSelector('[data-testid="settings-view"]');
+      await assertNoOverflow(`settings at ${viewport.name}px`);
+    }
+
+    await setViewport(page, 1280, 900, 1);
+    await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="stream-feed"]');
+    await context.settle();
     await context.shot('phase5-stream');
     await gotoRoute(page, '/settings');
+    await page.waitForSelector('[data-testid="settings-view"]');
+    await context.settle();
     await context.shot('phase5-settings');
   }
 };
@@ -801,7 +1086,12 @@ const suites = {
 /* ------------------------------------------------------------------ */
 
 const suiteNames =
-  requestedSuite === 'all' ? Object.keys(suites) : [requestedSuite];
+  requestedSuite === 'all'
+    ? Object.keys(suites)
+    : requestedSuite
+        .split(',')
+        .map((name) => name.trim())
+        .filter(Boolean);
 
 if (suiteNames.some((name) => !(name in suites))) {
   console.error(`Unknown suite "${requestedSuite}". Available: ${Object.keys(suites).join(', ')}, all`);
@@ -845,7 +1135,7 @@ async function main() {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await setViewport(page, 1440, 900, 1);
 
     page.on('console', (message) => {
       if (message.type() === 'error') {

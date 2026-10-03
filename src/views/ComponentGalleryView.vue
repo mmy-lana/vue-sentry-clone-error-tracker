@@ -7,7 +7,7 @@
  * product screen. The feature components are rendered against the real
  * IndexedDB dataset. It is intentionally not linked from the navigation.
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import BaseBadge, { type BadgeTone } from '../components/ui/BaseBadge.vue';
 import BaseButton from '../components/ui/BaseButton.vue';
 import BaseCard from '../components/ui/BaseCard.vue';
@@ -59,7 +59,7 @@ const page = ref<number>(1);
 const toast = ref<string>('');
 
 // Live dataset used by the feature component harness.
-const liveIssues = ref<Issue[]>([]);
+const liveIssues = computed<Issue[]>(() => issueStore.issues);
 const selectedIssueIds = ref<string[]>([]);
 const harnessQuery = ref<string>('');
 
@@ -175,17 +175,6 @@ async function deleteSimulated(): Promise<void> {
   log('deleted simulated issue');
   simulatedIssueId.value = null;
 }
-
-onMounted(() => {
-  liveIssues.value = [...issueStore.issues];
-});
-
-watch(
-  () => issueStore.issues,
-  (rows) => {
-    liveIssues.value = rows;
-  }
-);
 
 
 </script>

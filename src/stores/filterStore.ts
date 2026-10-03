@@ -118,21 +118,38 @@ export const useFilterStore = defineStore('filter', () => {
     return query;
   }
 
+  let syncTimer: number | null = null;
+
+  function cancelPendingSync(): void {
+    if (syncTimer !== null) {
+      window.clearTimeout(syncTimer);
+      syncTimer = null;
+    }
+  }
+
+  /**
+   * URL synchronisation is debounced so typing in the search field produces a
+   * single history entry instead of one replacement per keystroke.
+   */
   watch(
     criteria,
     () => {
       if (isHydrating.value) return;
       if (router.currentRoute.value.name !== 'issues-list') return;
 
-      const query = toQueryParams();
-      const current = router.currentRoute.value.query;
-      const unchanged =
-        Object.keys(query).length === Object.keys(current).length &&
-        Object.entries(query).every(([key, value]) => current[key] === value);
+      cancelPendingSync();
+      syncTimer = window.setTimeout(() => {
+        syncTimer = null;
+        const query = toQueryParams();
+        const current = router.currentRoute.value.query;
+        const unchanged =
+          Object.keys(query).length === Object.keys(current).length &&
+          Object.entries(query).every(([key, value]) => current[key] === value);
 
-      if (unchanged) return;
+        if (unchanged) return;
 
-      void router.replace({ query }).catch(() => undefined);
+        void router.replace({ query }).catch(() => undefined);
+      }, 250);
     },
     { deep: true }
   );
@@ -140,6 +157,7 @@ export const useFilterStore = defineStore('filter', () => {
   return {
     criteria,
     isHydrating,
+    cancelPendingSync,
     isDefaultState,
     availableEnvironments,
     timeRangeOptions,
