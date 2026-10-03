@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "@vueuse/core": "latest",
@@ -17,9 +19,11 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "latest",
+    "@types/node": "^26.6.4",
     "@vitejs/plugin-vue": "latest",
+    "puppeteer-core": "^25.12.0",
     "tailwindcss": "latest",
-    "typescript": "latest",
+    "typescript": "^6.0.3",
     "vite": "latest",
     "vue-tsc": "latest"
   }

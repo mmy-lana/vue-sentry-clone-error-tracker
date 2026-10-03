@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 
 repomix-output.xml
+# local verification artifacts
+.verify
+.pnpm-store
+*.tsbuildinfo

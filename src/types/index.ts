@@ -1,6 +1,10 @@
 export type ErrorLevel = 'fatal' | 'error' | 'warning' | 'info' | 'debug';
 export type IssueStatus = 'unresolved' | 'resolved' | 'ignored';
 export type BreadcrumbType = 'default' | 'http' | 'navigation' | 'ui.click' | 'console' | 'system';
+export type ErrorPlatform = 'javascript' | 'node' | 'vue';
+export type IssueSortField = 'last_seen' | 'event_count' | 'user_count' | 'first_seen';
+export type SortDirection = 'asc' | 'desc';
+export type BulkActionType = 'resolve' | 'unresolve' | 'ignore' | 'delete';
 
 export interface StackFrame {
   id: string;
@@ -63,7 +67,7 @@ export interface ErrorEvent {
   issue_id: string;
   project_id: string;
   timestamp: number;
-  platform: 'javascript' | 'node' | 'vue';
+  platform: ErrorPlatform;
   level: ErrorLevel;
   message: string;
   culprit: string;
@@ -79,6 +83,13 @@ export interface ErrorEvent {
     version: string;
   };
 }
+
+/**
+ * Payload accepted by the ingestion pipeline. The database layer derives
+ * `id`, `issue_id` and `fingerprint` so callers never author them.
+ */
+export type ErrorEventInput = Omit<ErrorEvent, 'id' | 'issue_id' | 'fingerprint'> &
+  Partial<Pick<ErrorEvent, 'id' | 'issue_id' | 'fingerprint'>>;
 
 export interface HourlyBucket {
   hour_timestamp: number;
@@ -112,13 +123,42 @@ export interface IssueFilterCriteria {
   level: ErrorLevel | 'all';
   environment: string | 'all';
   time_range_hours: number;
-  sort_by: 'last_seen' | 'event_count' | 'user_count' | 'first_seen';
-  sort_order: 'asc' | 'desc';
+  sort_by: IssueSortField;
+  sort_order: SortDirection;
 }
 
 export interface BulkActionRequest {
   issue_ids: string[];
-  action: 'resolve' | 'unresolve' | 'ignore' | 'delete';
+  action: BulkActionType;
+}
+
+/** Key/value row persisted in the `settings` object store. */
+export interface SettingRecord {
+  key: string;
+  value: unknown;
+}
+
+/** Persisted user preferences owned by the settings screen. */
+export interface AppPreferences {
+  project_id: string;
+  default_environment: string;
+  default_time_range_hours: number;
+  auto_seed_on_boot: boolean;
+  live_stream_paused_by_default: boolean;
+  live_stream_max_rows: number;
+  reduced_motion: boolean;
+}
+
+/** One row of the ingestion audit trail rendered by the live stream drawer. */
+export interface IngestionLogEntry {
+  id: string;
+  timestamp: number;
+  outcome: 'created' | 'merged' | 'regressed' | 'rejected';
+  issue_id: string;
+  issue_title: string;
+  level: ErrorLevel;
+  fingerprint: string;
+  detail: string;
 }
 
 export interface TabItem {
@@ -142,4 +182,21 @@ export interface BaseDropdownItem {
 export interface BaseDropdownProps {
   items: BaseDropdownItem[];
   triggerText?: string;
+}
+
+export interface AppDatabaseSchema {
+  issues: {
+    key: string;
+    value: Issue;
+    indexes: string[];
+  };
+  events: {
+    key: string;
+    value: ErrorEvent;
+    indexes: string[];
+  };
+  settings: {
+    key: string;
+    value: SettingRecord;
+  };
 }
