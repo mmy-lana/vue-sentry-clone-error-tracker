@@ -7,7 +7,7 @@
  * product screen. The feature components are rendered against the real
  * IndexedDB dataset. It is intentionally not linked from the navigation.
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import BaseBadge, { type BadgeTone } from '../components/ui/BaseBadge.vue';
 import BaseButton from '../components/ui/BaseButton.vue';
 import BaseCard from '../components/ui/BaseCard.vue';
@@ -34,7 +34,12 @@ import ContextInspector from '../components/domain/details/ContextInspector.vue'
 import EventPaginationHeader from '../components/domain/details/EventPaginationHeader.vue';
 import StackTraceViewer from '../components/domain/details/StackTraceViewer.vue';
 import TagsBreakdownTable from '../components/domain/details/TagsBreakdownTable.vue';
-import { db } from '../services/db';
+import { useBreakpoints } from '../composables/useBreakpoints';
+import { useIssues } from '../composables/useIssues';
+import { useSimulator } from '../composables/useSimulator';
+import { useFilterStore } from '../stores/filterStore';
+import { useIssueStore } from '../stores/issueStore';
+import { useEventStore } from '../stores/eventStore';
 import type { BaseDropdownItem, ErrorEvent, Issue, TabItem } from '../types';
 import { LEVEL_ORDER, STATUS_ORDER } from '../utils/theme';
 
@@ -55,7 +60,6 @@ const toast = ref<string>('');
 
 // Live dataset used by the feature component harness.
 const liveIssues = ref<Issue[]>([]);
-const liveEvents = ref<ErrorEvent[]>([]);
 const selectedIssueIds = ref<string[]>([]);
 const harnessQuery = ref<string>('');
 
@@ -87,6 +91,14 @@ const sortItems: BaseDropdownItem[] = [
 const isIndeterminate = computed<boolean>(() => someSelected.value && !selectAll.value);
 
 const sampleIssue = computed<Issue | null>(() => liveIssues.value[0] ?? null);
+
+/** Events of the first issue, oldest first, kept live through the store. */
+const liveEvents = computed<ErrorEvent[]>(() => {
+  const issueId = sampleIssue.value?.id;
+  if (!issueId) return [];
+  return [...eventStore.eventsForIssue(issueId)].sort((a, b) => a.timestamp - b.timestamp);
+});
+
 const sampleEvent = computed<ErrorEvent | null>(() => liveEvents.value[0] ?? null);
 
 function announce(message: string): void {
@@ -106,11 +118,76 @@ function toggleSelectAll(issueIds: string[]): void {
   selectedIssueIds.value = issueIds.length === selectedIssueIds.value.length ? [] : [...issueIds];
 }
 
-onMounted(async () => {
-  liveIssues.value = await db.issues.orderBy('last_seen').reverse().toArray();
-  const first = liveIssues.value[0];
-  if (first) liveEvents.value = await db.events.where('issue_id').equals(first.id).sortBy('timestamp');
+const issueStore = useIssueStore();
+const eventStore = useEventStore();
+const filterStore = useFilterStore();
+const simulator = useSimulator();
+const issuesFacade = useIssues({ pageSize: 5, syncEnvironments: false });
+const { isCompact, isMobile, isTablet, isDesktop, viewportClass, sidebarMode } = useBreakpoints();
+
+const simulatedIssueId = ref<string | null>(null);
+const pipelineLog = ref<string[]>([]);
+
+function log(message: string): void {
+  pipelineLog.value = [message, ...pipelineLog.value].slice(0, 6);
+}
+
+const lastOutcome = computed<string>(() => issueStore.ingestionLog[0]?.outcome ?? 'none');
+
+const simulatedIssue = computed<Issue | null>(
+  () => issueStore.issues.find((issue) => issue.id === simulatedIssueId.value) ?? null
+);
+
+const simulatedStatus = computed<string>(() => simulatedIssue.value?.status ?? '—');
+const simulatedRegressions = computed<number>(() => simulatedIssue.value?.regression_count ?? 0);
+
+const queryPreview = computed<string>(() => {
+  const params = filterStore.toQueryParams();
+  return Object.keys(params).length === 0 ? '(defaults)' : new URLSearchParams(params).toString();
 });
+
+const facetSummary = computed<string>(() => {
+  const { effectiveStatus, effectiveLevel, effectiveEnvironment } = issuesFacade;
+  return `${effectiveStatus.value} / ${effectiveLevel.value} / ${effectiveEnvironment.value}`;
+});
+
+async function emitPreset(presetId: string): Promise<void> {
+  const preset = simulator.presets.find((candidate) => candidate.id === presetId);
+  if (!preset) return;
+  const issueId = await simulator.emit(preset);
+  if (issueId) {
+    simulatedIssueId.value = issueId;
+    log(`${preset.label} -> ${issueStore.ingestionLog[0]?.outcome ?? 'failed'}`);
+  } else {
+    log(`${preset.label} -> failed: ${simulator.lastError.value ?? 'unknown error'}`);
+  }
+}
+
+async function resolveSimulated(): Promise<void> {
+  if (!simulatedIssueId.value) return;
+  await issueStore.updateStatus([simulatedIssueId.value], 'resolved');
+  log('resolved simulated issue');
+}
+
+async function deleteSimulated(): Promise<void> {
+  if (!simulatedIssueId.value) return;
+  await issueStore.deleteIssues([simulatedIssueId.value]);
+  log('deleted simulated issue');
+  simulatedIssueId.value = null;
+}
+
+onMounted(() => {
+  liveIssues.value = [...issueStore.issues];
+});
+
+watch(
+  () => issueStore.issues,
+  (rows) => {
+    liveIssues.value = rows;
+  }
+);
+
+
 </script>
 
 <template>
@@ -412,6 +489,131 @@ onMounted(async () => {
         title="No event selected"
         description="The seeded dataset has not produced an event yet."
       />
+    </BaseCard>
+
+    <BaseCard
+      title="State pipeline harness"
+      description="Live Pinia stores, Dexie ingestion transactions and breakpoint classification"
+      data-testid="pipeline-harness"
+    >
+      <div class="flex flex-col gap-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <BaseButton
+            v-for="preset in simulator.presets"
+            :key="preset.id"
+            size="sm"
+            variant="secondary"
+            :data-testid="`emit-${preset.id}`"
+            @click="emitPreset(preset.id)"
+          >
+            Emit {{ preset.label }}
+          </BaseButton>
+          <BaseButton
+            size="sm"
+            variant="ghost"
+            data-testid="resolve-simulated"
+            @click="resolveSimulated"
+          >
+            Resolve last
+          </BaseButton>
+          <BaseButton
+            size="sm"
+            variant="danger"
+            data-testid="delete-simulated"
+            @click="deleteSimulated"
+          >
+            Delete last
+          </BaseButton>
+          <BaseButton
+            size="sm"
+            variant="primary"
+            data-testid="toggle-filter-status"
+            @click="filterStore.setStatus(filterStore.criteria.status === 'unresolved' ? 'all' : 'unresolved')"
+          >
+            Toggle status facet
+          </BaseButton>
+        </div>
+
+        <div class="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <IssueStatsCard
+            label="Issues"
+            :value="issueStore.issues.length"
+            tone="brand"
+          />
+          <IssueStatsCard
+            label="Unresolved"
+            :value="issueStore.totalUnresolvedCount"
+            tone="fatal"
+          />
+          <IssueStatsCard
+            label="Events"
+            :value="issueStore.totalEventCount"
+            tone="info"
+          />
+          <IssueStatsCard
+            label="Stored events"
+            :value="eventStore.events.length"
+            tone="info"
+          />
+          <IssueStatsCard
+            label="Last outcome"
+            :value="lastOutcome"
+            tone="neutral"
+          />
+          <IssueStatsCard
+            label="Viewport"
+            :value="viewportClass"
+            tone="brand"
+            :hint="`sidebar: ${sidebarMode}`"
+          />
+        </div>
+
+        <dl class="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <div class="rounded border border-surface-800 bg-surface-950/60 p-2">
+            <dt class="text-slate-500">Effective facets</dt>
+            <dd class="mt-0.5 text-slate-200" data-testid="facet-summary">{{ facetSummary }}</dd>
+          </div>
+          <div class="rounded border border-surface-800 bg-surface-950/60 p-2">
+            <dt class="text-slate-500">Filtered / total</dt>
+            <dd class="mt-0.5 tabular-nums text-slate-200" data-testid="filtered-summary">
+              {{ issuesFacade.sortedIssues.value.length }} / {{ issuesFacade.issues.value.length }}
+            </dd>
+          </div>
+          <div class="rounded border border-surface-800 bg-surface-950/60 p-2">
+            <dt class="text-slate-500">Serialised query</dt>
+            <dd class="mt-0.5 break-all font-mono text-[11px] text-slate-200" data-testid="query-preview">
+              {{ queryPreview }}
+            </dd>
+          </div>
+          <div class="rounded border border-surface-800 bg-surface-950/60 p-2">
+            <dt class="text-slate-500">Simulated issue</dt>
+            <dd class="mt-0.5 text-slate-200" data-testid="simulated-status">
+              {{ simulatedStatus }} · regressions {{ simulatedRegressions }}
+            </dd>
+          </div>
+        </dl>
+
+        <div class="flex flex-wrap gap-1.5">
+          <BaseBadge
+            v-for="(entry, index) in pipelineLog"
+            :key="`${entry}-${index}`"
+            tone="neutral"
+            :label="entry"
+            size="sm"
+          />
+          <BaseBadge
+            v-if="pipelineLog.length === 0"
+            tone="neutral"
+            label="no pipeline activity yet"
+            size="sm"
+          />
+        </div>
+
+        <p class="text-[11px] text-slate-500">
+          Breakpoints — compact: {{ isCompact }} · mobile: {{ isMobile }} · tablet: {{ isTablet }} ·
+          desktop: {{ isDesktop }}
+        </p>
+      </div>
     </BaseCard>
 
     <p

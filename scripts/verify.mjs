@@ -449,6 +449,7 @@ const suites = {
 
     context.step('stack frames');
     // Stack frames expand and expose local variables.
+    await page.waitForSelector('[data-frame-id]', { timeout: 10_000 });
     const frameCount = await countRows(page, '[data-frame-id]');
     assert(frameCount >= 1, `stack frames render (got ${frameCount})`);
     const inAppFrameId = await page.$eval('[data-frame-id]', (el) => el.getAttribute('data-frame-id') ?? '');
@@ -579,10 +580,152 @@ const suites = {
   },
 
   async phase4(page, context) {
-    await gotoRoute(page, '/issues');
-    const rendered = await countRows(page, '[data-issue-row]');
-    assert(rendered > 0, 'issue rows render from the reactive store');
-    await context.shot('phase4-desktop');
+    context.step('stores bound to live queries');
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="pipeline-harness"]', { timeout: 15_000 });
+    await page.waitForFunction(
+      () => {
+        const text = document.querySelector('[data-testid="filtered-summary"]')?.textContent ?? '';
+        return /^\d+ \/ \d+$/.test(text.trim()) && !text.trim().startsWith('0 /');
+      },
+      { timeout: 15_000 }
+    );
+
+    const readCounters = () =>
+      page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="pipeline-harness"] p'));
+        const labelOf = (text) =>
+          cards.find((node) => (node.textContent ?? '').trim().toLowerCase() === text.toLowerCase());
+        const valueAfter = (text) => {
+          const card = labelOf(text);
+          return card?.parentElement?.querySelector('span')?.textContent?.trim() ?? '';
+        };
+        return {
+          issues: valueAfter('Issues'),
+          unresolved: valueAfter('Unresolved'),
+          events: valueAfter('Events'),
+          stored: valueAfter('Stored events'),
+          outcome: valueAfter('Last outcome'),
+          viewport: valueAfter('Viewport')
+        };
+      });
+
+    const before = await readCounters();
+    assert(before.issues !== '' && before.issues !== '0', `issues are loaded from IndexedDB (${JSON.stringify(before)})`);
+    assert(before.viewport === 'desktop', `desktop viewport classified (got ${before.viewport})`);
+
+    context.step('ingest creates a new fingerprint group');
+    await page.click('[data-testid="emit-type-error"]');
+    await page.waitForFunction(
+      (previous) => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="pipeline-harness"] p'));
+        const card = cards.find((node) => (node.textContent ?? '').trim().toLowerCase() === 'issues');
+        return (card?.parentElement?.querySelector('span')?.textContent?.trim() ?? '') !== previous;
+      },
+      { timeout: 10_000 },
+      before.issues
+    );
+    const afterCreate = await readCounters();
+    assert(afterCreate.outcome === 'created', `first emit creates an issue (got ${afterCreate.outcome})`);
+
+    context.step('second emit merges into the same group');
+    const eventsBeforeMerge = afterCreate.events;
+    await page.click('[data-testid="emit-type-error"]');
+    await page.waitForFunction(
+      (previous) => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="pipeline-harness"] p'));
+        const card = cards.find((node) => (node.textContent ?? '').trim().toLowerCase() === 'events');
+        return (card?.parentElement?.querySelector('span')?.textContent?.trim() ?? '') !== previous;
+      },
+      { timeout: 10_000 },
+      eventsBeforeMerge
+    );
+    const afterMerge = await readCounters();
+    assert(afterMerge.outcome === 'merged', `second emit merges (got ${afterMerge.outcome})`);
+    assert(
+      afterMerge.issues === afterCreate.issues,
+      `merge keeps the issue count stable (${afterCreate.issues} -> ${afterMerge.issues})`
+    );
+
+    context.step('resolve then re-emit records a regression');
+    await page.click('[data-testid="resolve-simulated"]');
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="simulated-status"]')?.textContent ?? '').includes('resolved'),
+      { timeout: 10_000 }
+    );
+    await page.click('[data-testid="emit-type-error"]');
+    await page.waitForFunction(
+      () => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="pipeline-harness"] p'));
+        const card = cards.find((node) => (node.textContent ?? '').trim().toLowerCase() === 'last outcome');
+        return (card?.parentElement?.querySelector('span')?.textContent?.trim() ?? '') === 'regressed';
+      },
+      { timeout: 10_000 }
+    );
+    const regressionText = await textOf(page, '[data-testid="simulated-status"]');
+    assert(
+      regressionText.includes('unresolved') && regressionText.includes('regressions 1'),
+      `resolved issue re-opens and counts the regression (got "${regressionText.trim()}")`
+    );
+
+    context.step('ingestion persisted to IndexedDB');
+    const storedCounts = await readDatabaseCounts(page);
+    assert(storedCounts.events > 100, `events persisted (${storedCounts.events})`);
+    assert(storedCounts.issues >= 8, `new issue persisted (${storedCounts.issues})`);
+
+    context.step('status facet toggles the filtered set');
+    const filteredBefore = await textOf(page, '[data-testid="filtered-summary"]');
+    await page.click('[data-testid="toggle-filter-status"]');
+    await page.waitForFunction(
+      (previous) =>
+        (document.querySelector('[data-testid="filtered-summary"]')?.textContent ?? '').trim() !== previous.trim(),
+      { timeout: 10_000 },
+      filteredBefore
+    );
+    const facetText = await textOf(page, '[data-testid="facet-summary"]');
+    assert(facetText.includes('all'), `facet switch reflected (got "${facetText.trim()}")`);
+    const queryText = await textOf(page, '[data-testid="query-preview"]');
+    assert(queryText.length > 0, `query serialisation is exposed (got "${queryText.trim()}")`);
+
+    context.step('breakpoint classification follows the viewport');
+    for (const [width, expected] of [
+      [360, 'compact'],
+      [430, 'compact'],
+      [768, 'tablet'],
+      [1024, 'desktop']
+    ]) {
+      await page.setViewport({ width, height: 900, deviceScaleFactor: 1 });
+      await sleep(250);
+      const viewportClass = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="pipeline-harness"] p'));
+        const card = cards.find((node) => (node.textContent ?? '').trim().toLowerCase() === 'viewport');
+        return card?.parentElement?.querySelector('span')?.textContent?.trim() ?? '';
+      });
+      assert(viewportClass === expected, `viewport ${width}px classified as ${expected} (got ${viewportClass})`);
+    }
+    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await sleep(200);
+
+    context.step('deleting the issue removes its events');
+    const countsBeforeDelete = await readDatabaseCounts(page);
+    await page.click('[data-testid="delete-simulated"]');
+    await page.waitForFunction(
+      (previous) => {
+        const cards = Array.from(document.querySelectorAll('[data-testid="pipeline-harness"] p'));
+        const card = cards.find((node) => (node.textContent ?? '').trim().toLowerCase() === 'stored events');
+        return (card?.parentElement?.querySelector('span')?.textContent?.trim() ?? '') !== previous;
+      },
+      { timeout: 10_000 },
+      String(countsBeforeDelete.events)
+    );
+    const afterDelete = await readDatabaseCounts(page);
+    assert(afterDelete.issues === countsBeforeDelete.issues - 1, 'issue removed');
+    assert(afterDelete.events < countsBeforeDelete.events, 'orphaned events removed with the issue');
+
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="pipeline-harness"]');
+    await context.settle();
+    await context.shot('phase4-pipeline');
   },
 
   async phase5(page, context) {

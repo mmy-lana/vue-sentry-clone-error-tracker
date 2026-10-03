@@ -88,8 +88,11 @@ export interface ErrorEvent {
  * Payload accepted by the ingestion pipeline. The database layer derives
  * `id`, `issue_id` and `fingerprint` so callers never author them.
  */
-export type ErrorEventInput = Omit<ErrorEvent, 'id' | 'issue_id' | 'fingerprint'> &
-  Partial<Pick<ErrorEvent, 'id' | 'issue_id' | 'fingerprint'>>;
+export type ErrorEventInput = Omit<
+  ErrorEvent,
+  'id' | 'issue_id' | 'fingerprint' | 'timestamp'
+> &
+  Partial<Pick<ErrorEvent, 'id' | 'issue_id' | 'fingerprint' | 'timestamp'>>;
 
 export interface HourlyBucket {
   hour_timestamp: number;
