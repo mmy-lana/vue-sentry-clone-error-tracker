@@ -26,6 +26,13 @@ const routes: RouteRecordRaw[] = [
     path: '/settings',
     name: 'settings',
     component: () => import('../views/SettingsView.vue')
+  },
+  {
+    // Design-system gallery: deliberately unlinked from the navigation so the
+    // primitives can be exercised in isolation.
+    path: '/ui-kit',
+    name: 'ui-kit',
+    component: () => import('../views/ComponentGalleryView.vue')
   }
 ];
 

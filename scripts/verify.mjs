@@ -110,6 +110,20 @@ async function textOf(page, selector) {
   return page.$eval(selector, (el) => el.textContent?.trim() ?? '');
 }
 
+/** Elements whose right edge exceeds the viewport — used to diagnose overflow. */
+async function overflowingElements(page) {
+  return page.evaluate(() => {
+    const width = document.documentElement.clientWidth;
+    return Array.from(document.querySelectorAll('body *'))
+      .filter((el) => el.getBoundingClientRect().right > width + 1)
+      .slice(0, 8)
+      .map((el) => {
+        const rect = el.getBoundingClientRect();
+        return `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 90)} right=${Math.round(rect.right)}`;
+      });
+  });
+}
+
 async function countRows(page, selector) {
   return page.$$eval(selector, (nodes) => nodes.length);
 }
@@ -206,30 +220,171 @@ const suites = {
     const resolvedViewText = await page.evaluate(() => document.body.textContent ?? '');
     assert(resolvedViewText.includes('Issue Details') === false, 'detail view is not rendered on the list route');
 
-    context.shot('phase1-issues');
-    context.shot('phase1-stream');
+    await context.shot('phase1-issues');
+    await context.shot('phase1-stream');
     await gotoRoute(page, '/issues?status=resolved');
-    context.shot('phase1-settings');
+    await context.shot('phase1-settings');
   },
 
   async phase2(page, context) {
-    // Atomic primitives are mounted by a dedicated harness route.
-    await gotoRoute(page, '/issues');
-    const uiRootCount = await countRows(page, '[data-testid]');
-    assert(uiRootCount >= 0, 'page exposes test hooks');
-    context.shot('phase2-desktop');
-    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
-    await gotoRoute(page, '/issues');
-    context.shot('phase2-mobile');
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="gallery-button"]', { timeout: 15_000 });
+
+    const buttonCount = await countRows(page, '[data-testid="gallery-button"]');
+    assert(buttonCount >= 4, `expected the four button variants, found ${buttonCount}`);
+
+    const badgeCount = await countRows(page, '[data-testid="gallery-badge"]');
+    assert(badgeCount >= 10, `expected level and status badges, found ${badgeCount}`);
+
+    // Button: click emits and the status region reflects the action.
+    await page.click('[data-testid="gallery-button"]');
+    await page.waitForFunction(() => (document.body.textContent ?? '').includes('primary clicked'), {
+      timeout: 5000
+    });
+
+    // Button: disabled and loading never dispatch clicks.
+    const blocked = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('button'));
+      const loading = buttons.find((button) => button.getAttribute('aria-busy') === 'true');
+      const disabled = buttons.find((button) => button.disabled && button.getAttribute('aria-busy') !== 'true');
+      return {
+        loadingDisabled: loading ? loading.disabled : null,
+        disabledClickable: disabled ? !disabled.disabled : null
+      };
+    });
+    assert(blocked.loadingDisabled === true, 'loading buttons are disabled');
+
+    // Badge: every level exposes the expected human label.
+    const badgeLabels = await page.$$eval('[data-testid="gallery-badge"]', (nodes) =>
+      nodes.map((node) => node.textContent?.trim() ?? '')
+    );
+    for (const label of ['Fatal', 'Error', 'Warning', 'Info', 'Debug', 'Unresolved', 'Resolved', 'Ignored']) {
+      assert(badgeLabels.includes(label), `badge "${label}" renders (got ${JSON.stringify(badgeLabels)})`);
+    }
+
+    // Input: v-model wiring + accessible error messaging.
+    await page.type('input[placeholder="is:unresolved level:error"]', ' user:alice');
+    const inputValue = await page.$eval('input[placeholder="is:unresolved level:error"]', (el) => el.value);
+    assert(inputValue.endsWith('user:alice'), `input v-model updates (got ${inputValue})`);
+
+    const alertText = await page.$eval('[role="alert"]', (el) => el.textContent?.trim() ?? '');
+    assert(alertText.includes('valid email'), 'input error is announced via role=alert');
+
+    // Checkbox: toggles and exposes the native indeterminate DOM property.
+    const checkbox = await page.$('[data-testid="gallery-checkbox"] input');
+    assert(checkbox, 'checkbox input rendered');
+    await checkbox.click();
+    assert(await page.$eval('[data-testid="gallery-checkbox"] input', (el) => el.checked), 'checkbox toggles to checked');
+
+    const indeterminate = await page.$eval(
+      '[data-testid="gallery-checkbox-indeterminate"] input',
+      (el) => el.indeterminate
+    );
+    assert(indeterminate === true, 'select-all checkbox renders the indeterminate DOM state');
+
+    // Dropdown: opens, lists options, selects and reflects the selection.
+    await page.click('[data-testid="gallery-dropdown"] button');
+    await page.waitForSelector('[data-testid="gallery-dropdown"] [role="option"]', { timeout: 5000 });
+    const options = await page.$$eval('[data-testid="gallery-dropdown"] [role="option"]', (nodes) =>
+      nodes.map((node) => node.textContent?.trim() ?? '')
+    );
+    assert(options.includes('Event count'), `dropdown lists options (got ${JSON.stringify(options)})`);
+    await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll('[data-testid="gallery-dropdown"] [role="option"]')
+      );
+      const target = buttons.find((button) => button.textContent?.includes('Event count'));
+      target?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="gallery-dropdown"] button')?.textContent ?? '').includes('Event count'),
+      { timeout: 5000 }
+    );
+
+    // Dropdown: escape closes the popover.
+    await page.click('[data-testid="gallery-dropdown"] button');
+    await page.waitForSelector('[data-testid="gallery-dropdown"] [role="option"]', { timeout: 5000 });
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-testid="gallery-dropdown"] [role="option"]').length === 0,
+      { timeout: 5000 }
+    );
+
+    // Tabs: arrow key navigation moves selection.
+    await page.click('[role="tab"]');
+    const beforeArrow = await page.$eval('[role="tab"][aria-selected="true"]', (el) => el.textContent?.trim());
+    await page.keyboard.press('ArrowRight');
+    await page.waitForFunction(
+      (previous) => {
+        const active = document.querySelector('[role="tab"][aria-selected="true"]');
+        return active !== null && active.textContent?.trim() !== previous;
+      },
+      { timeout: 5000 },
+      beforeArrow
+    );
+    const activeTabText = await page.$eval('[role="tab"][aria-selected="true"]', (el) => el.textContent?.trim());
+    assert(activeTabText !== beforeArrow, `ArrowRight changes the active tab (${beforeArrow} -> ${activeTabText})`);
+
+    // Tooltip: appears on focus.
+    await page.evaluate(() => {
+      const button = Array.from(document.querySelectorAll('button')).find((node) =>
+        node.textContent?.trim() === 'Top'
+      );
+      button?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    await page.waitForSelector('[role="tooltip"]', { timeout: 5000 });
+    const tooltipText = await page.$eval('[role="tooltip"]', (el) => el.textContent?.trim());
+    assert(tooltipText === 'Top placement', `tooltip content is correct (got ${tooltipText})`);
+
+    // Pagination: next/prev update the page indicator.
+    const paginationText = await page.$eval('nav[aria-label="Pagination"] p', (el) => el.textContent ?? '');
+    assert(paginationText.includes('137'), `pagination reports the total (got ${paginationText.trim()})`);
+    await page.click('nav[aria-label="Pagination"] button[aria-label="Next page"]');
+    await page.waitForFunction(
+      () => (document.querySelector('nav[aria-label="Pagination"] p')?.textContent ?? '').includes('6–10'),
+      { timeout: 5000 }
+    );
+
+    // Modal: opens, traps focus, closes on Escape and restores focus.
+    await page.click('[data-testid="gallery-modal-open"]');
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 });
+    assert(
+      await page.$eval('[role="dialog"]', (el) => el.getAttribute('aria-modal') === 'true'),
+      'dialog exposes aria-modal'
+    );
+    const focusInsideDialog = await page.evaluate(
+      () => document.querySelector('[role="dialog"]')?.contains(document.activeElement) ?? false
+    );
+    assert(focusInsideDialog, 'initial focus moves into the dialog');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('[role="dialog"]') === null, { timeout: 5000 });
+    const focusRestored = await page.evaluate(
+      () => document.activeElement?.getAttribute('data-testid') === 'gallery-modal-open'
+    );
+    assert(focusRestored, 'focus returns to the trigger after closing');
+
+    // No horizontal overflow on the narrowest supported viewport.
+    await page.setViewport({ width: 360, height: 780, deviceScaleFactor: 1 });
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth
+    );
+    if (overflow > 1) {
+      const offenders = await overflowingElements(page);
+      throw new Error(
+        `ASSERTION FAILED: gallery has no horizontal overflow at 360px (overflow ${overflow}px)\n  ${offenders.join('\n  ')}`
+      );
+    }
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await gotoRoute(page, '/ui-kit');
+    await context.shot('phase2-gallery');
   },
 
   async phase3(page, context) {
     await gotoRoute(page, '/issues');
-    context.shot('phase3-desktop');
+    await context.shot('phase3-desktop');
     await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
     await gotoRoute(page, '/issues');
-    context.shot('phase3-mobile');
+    await context.shot('phase3-mobile');
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   },
 
@@ -237,7 +392,7 @@ const suites = {
     await gotoRoute(page, '/issues');
     const rendered = await countRows(page, '[data-issue-row]');
     assert(rendered > 0, 'issue rows render from the reactive store');
-    context.shot('phase4-desktop');
+    await context.shot('phase4-desktop');
   },
 
   async phase5(page, context) {
@@ -257,7 +412,7 @@ const suites = {
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth
       );
       assert(overflow <= 1, `no horizontal overflow at ${viewport.name}px (overflow ${overflow}px)`);
-      context.shot(`phase5-issues-${viewport.name}`);
+      await context.shot(`phase5-issues-${viewport.name}`);
     }
 
     await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
@@ -288,7 +443,7 @@ const suites = {
     await gotoRoute(page, `/issues/${issueId}`);
     const detailText = await page.evaluate(() => document.body.textContent ?? '');
     assert(detailText.includes('Stack'), 'detail view renders the stack trace section');
-    context.shot('phase5-detail-desktop');
+    await context.shot('phase5-detail-desktop');
 
     for (const viewport of viewports) {
       await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
@@ -297,14 +452,14 @@ const suites = {
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth
       );
       assert(overflow <= 1, `detail view has no horizontal overflow at ${viewport.name}px`);
-      context.shot(`phase5-detail-${viewport.name}`);
+      await context.shot(`phase5-detail-${viewport.name}`);
     }
 
     await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
     await gotoRoute(page, '/stream');
-    context.shot('phase5-stream');
+    await context.shot('phase5-stream');
     await gotoRoute(page, '/settings');
-    context.shot('phase5-settings');
+    await context.shot('phase5-settings');
   }
 };
 
@@ -370,17 +525,34 @@ async function main() {
       failedRequests.push(`${request.url()} :: ${request.failure()?.errorText ?? 'unknown'}`);
     });
 
+    // Screenshots are fire-and-forget from the suite's point of view, so the
+    // harness tracks them and drains the queue before moving on.
+    const pendingShots = new Set();
+
     const context = {
-      shot: async (name) => {
-        const file = join(shotDir, `${name}.png`);
-        try {
-          await page.screenshot({ path: file, fullPage: false });
-        } catch (error) {
-          // Screenshots are diagnostics only - a renderer hiccup must not mask
-          // the assertion results of the suite.
-          console.warn(`WARN  screenshot "${name}" failed: ${error?.message ?? error}`);
-        }
-        return file;
+      shot: (name) => {
+        const promise = (async () => {
+          const file = join(shotDir, `${name}.png`);
+          for (let attempt = 1; attempt <= 2; attempt += 1) {
+            try {
+              await page.screenshot({ path: file, optimizeForSpeed: true });
+              return;
+            } catch (error) {
+              if (attempt === 2) {
+                // Diagnostics only - a renderer hiccup must not mask results.
+                console.warn(`WARN  screenshot "${name}" failed: ${error?.message ?? error}`);
+                return;
+              }
+              await page.reload({ waitUntil: 'networkidle0' }).catch(() => undefined);
+            }
+          }
+        })();
+        pendingShots.add(promise);
+        void promise.finally(() => pendingShots.delete(promise));
+        return promise;
+      },
+      settle: async () => {
+        await Promise.allSettled(Array.from(pendingShots));
       },
       consoleErrors,
       pageErrors
@@ -390,6 +562,7 @@ async function main() {
       const startedAt = Date.now();
       try {
         await suites[name](page, context);
+        await context.settle();
         console.log(`PASS  ${name}  (${Date.now() - startedAt}ms)`);
       } catch (error) {
         failures += 1;
