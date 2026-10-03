@@ -44,7 +44,7 @@ function positionOf(frame: StackFrame): number {
 </script>
 
 <template>
-  <section class="flex flex-col gap-2" aria-label="Stack trace">
+  <section class="flex min-w-0 flex-col gap-2" aria-label="Stack trace">
     <header class="flex flex-wrap items-center justify-between gap-2">
       <h3 class="flex items-center gap-2 text-sm font-semibold text-slate-100">
         {{ title }}

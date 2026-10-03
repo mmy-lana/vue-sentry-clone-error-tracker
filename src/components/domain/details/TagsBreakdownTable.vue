@@ -68,14 +68,18 @@ const worstLevel = computed<ErrorLevel | null>(() => {
 </script>
 
 <template>
-  <section class="flex flex-col gap-2" aria-label="Tag distribution">
+  <section class="flex min-w-0 flex-col gap-2" aria-label="Tag distribution">
     <header class="flex items-center justify-between gap-2">
       <h3 class="text-sm font-semibold text-slate-100">Tag distribution</h3>
       <BaseBadge tone="neutral" :label="formatExactNumber(totalCount) + ' events'" size="sm" />
     </header>
 
-    <div v-if="visibleRows.length > 0" class="overflow-hidden rounded-lg border border-surface-700/70" data-testid="tags-table">
-      <table class="w-full table-fixed border-collapse text-left text-xs">
+    <div
+      v-if="visibleRows.length > 0"
+      class="code-scroll overflow-x-auto rounded-lg border border-surface-700/70"
+      data-testid="tags-table"
+    >
+      <table class="w-full min-w-[22rem] table-fixed border-collapse text-left text-xs">
         <thead class="bg-surface-850/70 text-[10px] uppercase tracking-wide text-slate-500">
           <tr>
             <th scope="col" class="w-1/4 px-3 py-2 font-medium">Key</th>

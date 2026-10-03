@@ -377,12 +377,9 @@ onMounted(async () => {
           height-class="h-10"
         />
 
-        <IssueRow
-          v-if="sampleIssue"
-          :issue="sampleIssue"
-          :selectable="false"
-          @open="announce(`open ${$event}`)"
-        />
+        <div v-if="sampleIssue" class="w-full min-w-0 basis-full">
+          <IssueRow :issue="sampleIssue" :selectable="false" @open="announce(`open ${$event}`)" />
+        </div>
       </div>
     </BaseCard>
 
@@ -391,8 +388,8 @@ onMounted(async () => {
       description="Stack frames, breadcrumbs, context inspector and tag distribution"
       data-testid="detail-harness"
     >
-      <div v-if="sampleIssue && sampleEvent" class="grid gap-4 lg:grid-cols-2">
-        <div class="flex flex-col gap-4">
+      <div v-if="sampleIssue && sampleEvent" class="grid min-w-0 gap-4 lg:grid-cols-2">
+        <div class="flex min-w-0 flex-col gap-4">
           <EventPaginationHeader
             :index="liveEvents.length"
             :total="liveEvents.length"
@@ -403,7 +400,7 @@ onMounted(async () => {
           <StackTraceViewer :frames="sampleEvent.exception.stacktrace.frames" />
           <BreadcrumbTimeline :breadcrumbs="sampleEvent.breadcrumbs" />
         </div>
-        <div class="flex flex-col gap-4">
+        <div class="flex min-w-0 flex-col gap-4">
           <ContextInspector :event="sampleEvent" />
           <TagsBreakdownTable :tags-summary="sampleIssue.tags_summary" />
         </div>

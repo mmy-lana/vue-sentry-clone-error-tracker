@@ -60,7 +60,7 @@ function open(): void {
     data-issue-row
     :data-issue-id="issue.id"
     :class="[
-      'group relative border-b border-surface-800/80 transition-colors last:border-b-0',
+      'group relative w-full min-w-0 border-b border-surface-800/80 transition-colors last:border-b-0',
       isActive ? 'bg-brand-600/10' : 'hover:bg-surface-850/70',
       selected ? 'bg-brand-600/[0.07]' : ''
     ]"

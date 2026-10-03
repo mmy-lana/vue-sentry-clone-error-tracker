@@ -71,7 +71,7 @@ const metaRows = computed<ContextRow[]>(() => [
 </script>
 
 <template>
-  <section class="flex flex-col gap-3" aria-label="Event context">
+  <section class="flex min-w-0 flex-col gap-3" aria-label="Event context">
     <header class="flex items-center justify-between gap-2">
       <h3 class="text-sm font-semibold text-slate-100">{{ title }}</h3>
       <BaseBadge :tone="event.level" size="sm" />
