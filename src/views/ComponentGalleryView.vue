@@ -4,9 +4,10 @@
  *
  * Renders every atomic primitive in isolation so the primitives can be
  * exercised (keyboard, focus, overflow and a11y) without going through a
- * product screen. It is intentionally not linked from the navigation.
+ * product screen. The feature components are rendered against the real
+ * IndexedDB dataset. It is intentionally not linked from the navigation.
  */
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import BaseBadge, { type BadgeTone } from '../components/ui/BaseBadge.vue';
 import BaseButton from '../components/ui/BaseButton.vue';
 import BaseCard from '../components/ui/BaseCard.vue';
@@ -17,7 +18,24 @@ import BaseModal from '../components/ui/BaseModal.vue';
 import BasePagination from '../components/ui/BasePagination.vue';
 import BaseTabs from '../components/ui/BaseTabs.vue';
 import BaseTooltip from '../components/ui/BaseTooltip.vue';
-import type { BaseDropdownItem, TabItem } from '../types';
+import EmptyState from '../components/molecules/EmptyState.vue';
+import EnvironmentTag from '../components/molecules/EnvironmentTag.vue';
+import FilterSearchBar from '../components/molecules/FilterSearchBar.vue';
+import SparklineBarGraph from '../components/molecules/SparklineBarGraph.vue';
+import TagBadgeGroup from '../components/molecules/TagBadgeGroup.vue';
+import TimeAgo from '../components/molecules/TimeAgo.vue';
+import UserAvatar from '../components/molecules/UserAvatar.vue';
+import IssueBulkBar from '../components/domain/issues/IssueBulkBar.vue';
+import IssueRow from '../components/domain/issues/IssueRow.vue';
+import IssueStatsCard from '../components/domain/issues/IssueStatsCard.vue';
+import IssueTable from '../components/domain/issues/IssueTable.vue';
+import BreadcrumbTimeline from '../components/domain/details/BreadcrumbTimeline.vue';
+import ContextInspector from '../components/domain/details/ContextInspector.vue';
+import EventPaginationHeader from '../components/domain/details/EventPaginationHeader.vue';
+import StackTraceViewer from '../components/domain/details/StackTraceViewer.vue';
+import TagsBreakdownTable from '../components/domain/details/TagsBreakdownTable.vue';
+import { db } from '../services/db';
+import type { BaseDropdownItem, ErrorEvent, Issue, TabItem } from '../types';
 import { LEVEL_ORDER, STATUS_ORDER } from '../utils/theme';
 
 const variantNames = ['primary', 'secondary', 'danger', 'ghost'] as const;
@@ -34,6 +52,22 @@ const activeTab = ref<string>('details');
 const sortChoice = ref<string>('last_seen');
 const page = ref<number>(1);
 const toast = ref<string>('');
+
+// Live dataset used by the feature component harness.
+const liveIssues = ref<Issue[]>([]);
+const liveEvents = ref<ErrorEvent[]>([]);
+const selectedIssueIds = ref<string[]>([]);
+const harnessQuery = ref<string>('');
+
+const SUGGESTIONS = [
+  'is:unresolved',
+  'is:resolved',
+  'level:error',
+  'level:fatal',
+  'env:production',
+  'env:staging',
+  'user:usr_9410'
+];
 
 const tabs: TabItem[] = [
   { key: 'details', label: 'Details', badge: 12 },
@@ -52,12 +86,31 @@ const sortItems: BaseDropdownItem[] = [
 
 const isIndeterminate = computed<boolean>(() => someSelected.value && !selectAll.value);
 
+const sampleIssue = computed<Issue | null>(() => liveIssues.value[0] ?? null);
+const sampleEvent = computed<ErrorEvent | null>(() => liveEvents.value[0] ?? null);
+
 function announce(message: string): void {
   toast.value = message;
   window.setTimeout(() => {
     if (toast.value === message) toast.value = '';
   }, 2000);
 }
+
+function toggleIssueSelection(issueId: string): void {
+  selectedIssueIds.value = selectedIssueIds.value.includes(issueId)
+    ? selectedIssueIds.value.filter((id) => id !== issueId)
+    : [...selectedIssueIds.value, issueId];
+}
+
+function toggleSelectAll(issueIds: string[]): void {
+  selectedIssueIds.value = issueIds.length === selectedIssueIds.value.length ? [] : [...issueIds];
+}
+
+onMounted(async () => {
+  liveIssues.value = await db.issues.orderBy('last_seen').reverse().toArray();
+  const first = liveIssues.value[0];
+  if (first) liveEvents.value = await db.events.where('issue_id').equals(first.id).sortBy('timestamp');
+});
 </script>
 
 <template>
@@ -207,6 +260,161 @@ function announce(message: string): void {
 
     <BaseCard title="Pagination" description="Windowed page buttons with ellipsis">
       <BasePagination v-model:page="page" :page-size="5" :total-items="137" />
+    </BaseCard>
+
+    <BaseCard
+      title="Issue list harness"
+      description="Live seeded data rendered through the issue table, rows, bulk bar and search bar"
+      data-testid="issue-harness"
+    >
+      <div class="flex flex-col gap-3">
+        <FilterSearchBar
+          v-model="harnessQuery"
+          :suggestions="SUGGESTIONS"
+          :result-count="liveIssues.length"
+        />
+
+        <div class="grid gap-2 sm:grid-cols-3">
+          <IssueStatsCard
+            label="Total issues"
+            :value="liveIssues.length"
+            tone="brand"
+            hint="Every fingerprint group stored locally"
+          />
+          <IssueStatsCard
+            label="Unresolved"
+            :value="liveIssues.filter((issue) => issue.status === 'unresolved').length"
+            tone="fatal"
+          />
+          <IssueStatsCard
+            label="Events"
+            :value="liveEvents.length"
+            tone="info"
+            hint="Events attached to the most recent issue"
+          />
+        </div>
+
+        <IssueTable
+          :issues="liveIssues.slice(0, 5)"
+          :selected-ids="selectedIssueIds"
+          :sort-by="'last_seen'"
+          @toggle-select="toggleIssueSelection"
+          @toggle-select-all="toggleSelectAll"
+          @open="announce(`open ${$event}`)"
+          @reset-filters="harnessQuery = ''"
+          @sort="announce(`sort by ${$event}`)"
+        />
+
+        <IssueBulkBar
+          :selected-count="selectedIssueIds.length"
+          @resolve="announce('bulk resolve')"
+          @ignore="announce('bulk ignore')"
+          @delete="announce('bulk delete')"
+          @clear="selectedIssueIds = []"
+        />
+
+        <IssueTable
+          :issues="[]"
+          :selected-ids="[]"
+          is-loading
+          data-testid="issue-table-loading"
+        />
+
+        <IssueTable
+          :issues="[]"
+          :selected-ids="[]"
+          data-testid="issue-table-empty"
+          empty-title="No issues match these filters"
+          empty-description="Widen the time range or clear the active operators."
+          @reset-filters="announce('filters reset')"
+        />
+
+        <div v-if="liveIssues.length === 0" class="pt-2">
+          <EmptyState
+            compact
+            icon="inbox"
+            title="Waiting for the first issue"
+            description="Trigger an error from the simulator to populate this harness."
+          />
+        </div>
+      </div>
+    </BaseCard>
+
+    <BaseCard
+      title="Molecules"
+      description="Relative time, avatars, environments and tag chips"
+      data-testid="molecule-harness"
+    >
+      <div class="flex flex-wrap items-center gap-4">
+        <span class="flex items-center gap-2 text-xs text-slate-400">
+          <TimeAgo :timestamp="Date.now() - 45 * 60_000" />
+          <TimeAgo :timestamp="Date.now() - 3 * 86_400_000" />
+          <TimeAgo :timestamp="0" fallback="never" />
+        </span>
+
+        <div class="flex items-center -space-x-1.5">
+          <UserAvatar user-id="usr_9410" email="alex@example.com" username="alex" />
+          <UserAvatar email="sam@example.com" username="sam r" size="md" />
+          <UserAvatar />
+        </div>
+
+        <div class="flex flex-wrap items-center gap-1.5">
+          <EnvironmentTag environment="production" />
+          <EnvironmentTag environment="staging" />
+          <EnvironmentTag environment="development" size="sm" />
+          <EnvironmentTag environment="local" />
+        </div>
+
+        <TagBadgeGroup
+          :tags="{ environment: 'production', browser: 'Chrome 122', release: 'dashboard@1.0.0' }"
+          :max="2"
+        />
+
+        <SparklineBarGraph
+          v-if="sampleIssue"
+          :buckets="sampleIssue.histogram_24h"
+          :tone="sampleIssue.level"
+          height-class="h-10"
+        />
+
+        <IssueRow
+          v-if="sampleIssue"
+          :issue="sampleIssue"
+          :selectable="false"
+          @open="announce(`open ${$event}`)"
+        />
+      </div>
+    </BaseCard>
+
+    <BaseCard
+      title="Detail harness"
+      description="Stack frames, breadcrumbs, context inspector and tag distribution"
+      data-testid="detail-harness"
+    >
+      <div v-if="sampleIssue && sampleEvent" class="grid gap-4 lg:grid-cols-2">
+        <div class="flex flex-col gap-4">
+          <EventPaginationHeader
+            :index="liveEvents.length"
+            :total="liveEvents.length"
+            :timestamp="sampleEvent.timestamp"
+            :level="sampleEvent.level"
+            is-newest
+          />
+          <StackTraceViewer :frames="sampleEvent.exception.stacktrace.frames" />
+          <BreadcrumbTimeline :breadcrumbs="sampleEvent.breadcrumbs" />
+        </div>
+        <div class="flex flex-col gap-4">
+          <ContextInspector :event="sampleEvent" />
+          <TagsBreakdownTable :tags-summary="sampleIssue.tags_summary" />
+        </div>
+      </div>
+
+      <EmptyState
+        v-else
+        icon="inbox"
+        title="No event selected"
+        description="The seeded dataset has not produced an event yet."
+      />
     </BaseCard>
 
     <p

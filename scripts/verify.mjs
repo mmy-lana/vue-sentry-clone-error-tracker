@@ -87,6 +87,8 @@ function startPreviewServer() {
   });
 }
 
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
 function assert(condition, message) {
   if (!condition) throw new Error(`ASSERTION FAILED: ${message}`);
 }
@@ -380,12 +382,200 @@ const suites = {
   },
 
   async phase3(page, context) {
-    await gotoRoute(page, '/issues');
-    await context.shot('phase3-desktop');
-    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
-    await gotoRoute(page, '/issues');
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="issue-harness"]', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="detail-harness"]', { timeout: 15_000 });
+
+    context.step('issue table rows');
+    // Issue table renders seeded rows with responsive layout in both modes.
+    await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
+    const rowCount = await countRows(page, '[data-issue-row]');
+    assert(rowCount >= 5, `issue table renders rows (got ${rowCount})`);
+
+    const rowText = await page.$eval('[data-issue-row]', (el) => el.textContent ?? '');
+    assert(/events/i.test(rowText), 'issue row exposes the event tally');
+    assert(/users?/i.test(rowText), 'issue row exposes the user tally');
+
+    context.step('sparkline');
+    // Sparkline draws one column per hourly bucket.
+    const sparkline = await page.$('[data-testid="sparkline"]');
+    assert(sparkline, 'sparkline rendered');
+    const barCount = await page.$eval('[data-testid="sparkline"]', (el) => el.children.length);
+    assert(barCount === 24, `sparkline draws 24 buckets (got ${barCount})`);
+    const sparklineLabel = await page.$eval('[data-testid="sparkline"]', (el) => el.getAttribute('aria-label') ?? '');
+    assert(sparklineLabel.includes('24 hours'), `sparkline is labelled (got "${sparklineLabel}")`);
+
+    context.step('bulk bar');
+    // Selection drives the bulk bar.
+    assert((await countRows(page, '[data-testid="issue-bulk-bar"]')) === 0, 'bulk bar hidden without selection');
+    await page.evaluate(() => {
+      const checkbox = document.querySelector('[data-issue-row] input[type="checkbox"]');
+      checkbox?.click();
+    });
+    await page.waitForSelector('[data-testid="issue-bulk-bar"]', { timeout: 5000 });
+    const bulkCount = await textOf(page, '[data-testid="bulk-count"]');
+    assert(bulkCount.includes('1 selected'), `bulk bar reflects selection (got "${bulkCount}")`);
+
+    context.step('bulk bar viewport');
+    // Bulk bar stays inside the viewport on the narrowest supported width.
+    await page.setViewport({ width: 360, height: 780, deviceScaleFactor: 1 });
+    const bulkBounds = await page.$eval('[data-testid="issue-bulk-bar"] > div', (el) => {
+      const rect = el.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, width: window.innerWidth };
+    });
+    assert(
+      bulkBounds.left >= 0 && bulkBounds.right <= bulkBounds.width + 1,
+      `bulk bar fits the viewport at 360px (${JSON.stringify(bulkBounds)})`
+    );
+    await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+
+    context.step('filter search bar');
+    // Search bar filters and applies operator suggestions.
+    await page.click('[data-testid="issue-harness"] input[type="search"]');
+    await page.waitForSelector('#filter-search-suggestions [role="option"]', { timeout: 5000 });
+    const optionCount = await countRows(page, '#filter-search-suggestions [role="option"]');
+    assert(optionCount >= 5, `suggestion list renders (got ${optionCount})`);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(
+      () => document.querySelectorAll('#filter-search-suggestions [role="option"]').length === 0,
+      { timeout: 5000 }
+    );
+    await page.type('[data-testid="issue-harness"] input[type="search"]', 'env:production');
+    await page.waitForFunction(
+      () =>
+        (document.querySelector('#filter-search-suggestions')?.textContent ?? '').includes('env:production'),
+      { timeout: 5000 }
+    );
+
+    context.step('stack frames');
+    // Stack frames expand and expose local variables.
+    const frameCount = await countRows(page, '[data-frame-id]');
+    assert(frameCount >= 1, `stack frames render (got ${frameCount})`);
+    const inAppFrameId = await page.$eval('[data-frame-id]', (el) => el.getAttribute('data-frame-id') ?? '');
+    assert(inAppFrameId.length > 0, 'stack frames carry stable ids');
+    await page.evaluate(() => {
+      document
+        .querySelectorAll('[data-frame-id] > button[aria-expanded="false"]')
+        .forEach((button) => button.click());
+    });
+    context.step('expand frames');
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-frame-id] pre').length > 0,
+      { timeout: 5000 }
+    );
+    const lineNumbers = await page.$$eval('[data-frame-id] pre', (nodes) => nodes.length);
+    assert(lineNumbers > 0, `expanded frames render source lines (got ${lineNumbers})`);
+
+    const openedVariables = await page.evaluate(() => {
+      const toggle = Array.from(document.querySelectorAll('[data-frame-id] button')).find((node) =>
+        (node.textContent ?? '').includes('Local variables')
+      );
+      toggle?.click();
+      return Boolean(toggle);
+    });
+    context.step(`local variables toggle present=${openedVariables}`);
+    if (openedVariables) {
+      try {
+        await page.waitForFunction(
+          () => document.querySelectorAll('[data-frame-id] dl').length > 0,
+          { timeout: 5000 }
+        );
+      } catch (error) {
+        const snapshot = await page.evaluate(() => ({
+          frames: document.querySelectorAll('[data-frame-id]').length,
+          dls: document.querySelectorAll('dl').length,
+          frameText: Array.from(document.querySelectorAll('[data-frame-id]')).map((frame) =>
+            (frame.textContent ?? '').replace(/\s+/g, ' ').slice(0, 120)
+          ),
+          toggles: Array.from(document.querySelectorAll('[data-frame-id] button')).map((button) =>
+            (button.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40)
+          )
+        }));
+        throw new Error(`ASSERTION FAILED: local variables did not expand. ${JSON.stringify(snapshot)}`);
+      }
+      const variableNames = await page.$$eval('[data-frame-id] dl dt', (nodes) =>
+        nodes.map((node) => node.textContent?.trim() ?? '')
+      );
+      assert(variableNames.length > 0, 'local variables are listed with names');
+    }
+
+    context.step('breadcrumbs');
+    // Breadcrumb timeline renders the captured trail with payload disclosure.
+    const crumbCount = await countRows(page, '[data-testid="breadcrumb-entry"]');
+    assert(crumbCount >= 3, `breadcrumb entries render (got ${crumbCount})`);
+    const crumbCategories = await page.$$eval('[data-testid="breadcrumb-entry"]', (nodes) =>
+      nodes.map((node) => node.textContent?.trim().split(' ')[0] ?? '')
+    );
+    assert(
+      crumbCategories.some((category) => category.length > 0),
+      `breadcrumb entries are labelled (got ${JSON.stringify(crumbCategories)})`
+    );
+    const payloadToggle = await page.evaluate(() => {
+      const toggle = Array.from(
+        document.querySelectorAll('[data-testid="breadcrumb-entry"] button')
+      ).find((node) => (node.textContent ?? '').includes('Show payload'));
+      toggle?.click();
+      return Boolean(toggle);
+    });
+    if (payloadToggle) {
+      await page.waitForFunction(
+        () => document.querySelectorAll('[data-testid="breadcrumb-entry"] dl').length > 0,
+        { timeout: 5000 }
+      );
+      const payloadKeys = await page.$$eval('[data-testid="breadcrumb-entry"] dl dt', (nodes) =>
+        nodes.map((node) => node.textContent?.trim() ?? '')
+      );
+      assert(payloadKeys.length > 0, 'breadcrumb payload lists its keys');
+    }
+
+    context.step('context inspector');
+    // Context inspector surfaces device, request, tags and user metadata.
+    const inspectorText = await textOf(page, '[data-testid="detail-harness"] dl');
+    assert(inspectorText.length > 0, 'context inspector renders definition lists');
+    const harnessText = await textOf(page, '[data-testid="detail-harness"]');
+    for (const label of ['Device', 'Request', 'Tags', 'User']) {
+      assert(harnessText.includes(label), `context inspector shows "${label}"`);
+    }
+
+    context.step('tag distribution');
+    // Tag distribution table renders key/value/share/event columns.
+    const tagRows = await countRows(page, '[data-testid="tags-table"] tbody tr');
+    assert(tagRows >= 3, `tag distribution renders rows (got ${tagRows})`);
+
+    context.step('empty state');
+    // Loading state: skeletons replace the rows while a fetch is in flight.
+    await page.waitForSelector('[data-testid="issue-table-loading"]', { timeout: 5000 });
+    const skeletonCount = await countRows(page, '[data-testid="issue-table-loading"] .animate-pulse');
+    assert(skeletonCount >= 3, `loading skeletons render (got ${skeletonCount})`);
+
+    // Empty state renders when the table receives no issues.
+    const emptyVisible = await page.evaluate(() => {
+      const holder = document.querySelector('[data-testid="issue-table-empty"]');
+      return (holder?.textContent ?? '').includes('No issues match these filters');
+    });
+    assert(emptyVisible, 'empty state renders for an unmatched filter');
+
+    const emptyReset = await page.evaluate(() => {
+      const button = Array.from(
+        document.querySelectorAll('[data-testid="issue-table-empty"] button')
+      ).find((node) => (node.textContent ?? '').includes('Clear filters'));
+      button?.click();
+      return Boolean(button);
+    });
+    assert(emptyReset, 'empty state exposes a reset action');
+
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="issue-harness"]');
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-issue-row]');
+    await context.settle();
     await context.shot('phase3-mobile');
     await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-issue-row]');
+    await context.settle();
+    await context.shot('phase3-desktop');
   },
 
   async phase4(page, context) {
@@ -553,6 +743,9 @@ async function main() {
       },
       settle: async () => {
         await Promise.allSettled(Array.from(pendingShots));
+      },
+      step: (label) => {
+        process.stdout.write(`    \u00b7 ${label}\n`);
       },
       consoleErrors,
       pageErrors
