@@ -1,5 +1,6 @@
 import { db } from './db';
 import { calculate24HourBuckets, computeFingerprint } from '../utils/analytics';
+import { redactRequest } from '../utils/redaction';
 import { MINUTE_MS } from '../utils/date';
 import type { Breadcrumb, ErrorEvent, Issue, IssueStatus, StackFrame } from '../types';
 
@@ -385,7 +386,7 @@ export async function seedInitialErrors(): Promise<SeedSummary> {
         tags,
         user: { ...user },
         request: scenario.requestPath
-          ? {
+          ? redactRequest({
               url: scenario.requestPath,
               method: 'GET',
               headers: {
@@ -393,7 +394,7 @@ export async function seedInitialErrors(): Promise<SeedSummary> {
                 'x-request-id': `req_${eventId}`
               },
               query_params: { locale: 'en-US' }
-            }
+            })
           : undefined,
         device: { ...device },
         sdk: {

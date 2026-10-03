@@ -7,7 +7,7 @@
  * product screen. The feature components are rendered against the real
  * IndexedDB dataset. It is intentionally not linked from the navigation.
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watchEffect } from 'vue';
 import BaseBadge, { type BadgeTone } from '../components/ui/BaseBadge.vue';
 import BaseButton from '../components/ui/BaseButton.vue';
 import BaseCard from '../components/ui/BaseCard.vue';
@@ -58,6 +58,13 @@ const sortChoice = ref<string>('last_seen');
 const page = ref<number>(1);
 const toast = ref<string>('');
 
+const issueStore = useIssueStore();
+const eventStore = useEventStore();
+const filterStore = useFilterStore();
+const simulator = useSimulator();
+const issuesFacade = useIssues({ pageSize: 5, syncEnvironments: false });
+const { isCompact, isMobile, isTablet, isDesktop, viewportClass, sidebarMode } = useBreakpoints();
+
 // Live dataset used by the feature component harness.
 const liveIssues = computed<Issue[]>(() => issueStore.issues);
 const selectedIssueIds = ref<string[]>([]);
@@ -92,12 +99,15 @@ const isIndeterminate = computed<boolean>(() => someSelected.value && !selectAll
 
 const sampleIssue = computed<Issue | null>(() => liveIssues.value[0] ?? null);
 
-/** Events of the first issue, oldest first, kept live through the store. */
-const liveEvents = computed<ErrorEvent[]>(() => {
+// Bind the detail harness to the sample issue through the scoped query.
+watchEffect(() => {
   const issueId = sampleIssue.value?.id;
-  if (!issueId) return [];
-  return [...eventStore.eventsForIssue(issueId)].sort((a, b) => a.timestamp - b.timestamp);
+  if (issueId) eventStore.loadIssue(issueId);
+  else eventStore.clearIssue();
 });
+
+/** Events of the sample issue, streamed through the issue-scoped store query. */
+const liveEvents = computed<ErrorEvent[]>(() => eventStore.issueEvents);
 
 const sampleEvent = computed<ErrorEvent | null>(() => liveEvents.value[0] ?? null);
 
@@ -118,12 +128,6 @@ function toggleSelectAll(issueIds: string[]): void {
   selectedIssueIds.value = issueIds.length === selectedIssueIds.value.length ? [] : [...issueIds];
 }
 
-const issueStore = useIssueStore();
-const eventStore = useEventStore();
-const filterStore = useFilterStore();
-const simulator = useSimulator();
-const issuesFacade = useIssues({ pageSize: 5, syncEnvironments: false });
-const { isCompact, isMobile, isTablet, isDesktop, viewportClass, sidebarMode } = useBreakpoints();
 
 const simulatedIssueId = ref<string | null>(null);
 const pipelineLog = ref<string[]>([]);
@@ -159,7 +163,7 @@ async function emitPreset(presetId: string): Promise<void> {
     simulatedIssueId.value = issueId;
     log(`${preset.label} -> ${issueStore.ingestionLog[0]?.outcome ?? 'failed'}`);
   } else {
-    log(`${preset.label} -> failed: ${simulator.lastError.value ?? 'unknown error'}`);
+    log(`${preset.label} -> failed: ${simulator.lastError ?? 'unknown error'}`);
   }
 }
 
@@ -540,8 +544,8 @@ async function deleteSimulated(): Promise<void> {
             tone="info"
           />
           <IssueStatsCard
-            label="Stored events"
-            :value="eventStore.events.length"
+            label="Recent events"
+            :value="eventStore.recentEvents.length"
             tone="info"
           />
           <IssueStatsCard

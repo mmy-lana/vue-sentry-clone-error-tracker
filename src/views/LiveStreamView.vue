@@ -3,7 +3,7 @@
  * Live ingestion feed: newest-first event stream with pause/resume, manual
  * triggers and the session ingestion audit log.
  */
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import ResponsiveContainer from '../components/layout/ResponsiveContainer.vue';
 import BaseBadge from '../components/ui/BaseBadge.vue';
@@ -28,7 +28,7 @@ const isLogOpen = ref<boolean>(false);
 const maxRows = ref<number>(50);
 const feedRef = ref<HTMLDivElement | null>(null);
 
-const feed = computed<ErrorEvent[]>(() => eventStore.events.slice(0, maxRows.value));
+const feed = computed<ErrorEvent[]>(() => eventStore.recentEvents.slice(0, maxRows.value));
 
 const lastEventId = computed<string>(() => feed.value[0]?.id ?? '');
 
@@ -66,10 +66,8 @@ watch(lastEventId, async () => {
   if (feedRef.value) feedRef.value.scrollTop = 0;
 });
 
-onMounted(() => {
-  simulator.reset();
-});
-
+// The simulator is a singleton store: the route must never leave an interval
+// running behind it, but it must not reset session-wide counters either.
 onBeforeUnmount(() => {
   simulator.stop();
 });
@@ -90,7 +88,7 @@ onBeforeUnmount(() => {
               {{ isPaused ? 'Feed paused' : 'Listening for events' }}
             </p>
             <p class="text-[11px] text-slate-500" data-testid="stream-counter">
-              {{ feed.length }} of {{ eventStore.events.length }} stored events shown
+              {{ feed.length }} of {{ eventStore.recentEvents.length }} recent events loaded
             </p>
           </div>
         </div>

@@ -10,7 +10,7 @@ import BaseButton from '../components/ui/BaseButton.vue';
 import BaseModal from '../components/ui/BaseModal.vue';
 import BaseTabs from '../components/ui/BaseTabs.vue';
 import EmptyState from '../components/molecules/EmptyState.vue';
-import { db, readSetting, resetDatabase, writeSetting } from '../services/db';
+import { clearEventsPreservingIssues, readSetting, resetDatabase, writeSetting } from '../services/db';
 import { seedInitialErrors } from '../services/seeder';
 import { useIssueStore } from '../stores/issueStore';
 import { useFilterStore } from '../stores/filterStore';
@@ -37,6 +37,7 @@ const isLoaded = ref<boolean>(false);
 const isBusy = ref<boolean>(false);
 const saveState = ref<'idle' | 'saved' | 'error'>('idle');
 const confirmAction = ref<'reset' | 'clear' | null>(null);
+const removedEvents = ref<number>(0);
 const activeTab = ref<string>('preferences');
 
 const tabs: TabItem[] = [
@@ -88,13 +89,14 @@ async function resetDatabaseAndReseed(): Promise<void> {
   }
 }
 
-async function clearDataset(): Promise<void> {
+/**
+ * Prunes raw events only. Issue definitions, statuses and assignments survive;
+ * only the derived counters are reset. See `clearEventsPreservingIssues`.
+ */
+async function clearEventsOnly(): Promise<void> {
   isBusy.value = true;
   try {
-    await db.transaction('rw', [db.issues, db.events], async () => {
-      await db.issues.clear();
-      await db.events.clear();
-    });
+    removedEvents.value = await clearEventsPreservingIssues();
     confirmAction.value = null;
   } finally {
     isBusy.value = false;
@@ -247,6 +249,15 @@ onMounted(loadPreferences);
           <span class="font-mono">vue_sentry_clone_db</span>
         </p>
 
+        <p
+          v-if="removedEvents > 0"
+          class="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-200"
+          role="status"
+          data-testid="settings-purge-result"
+        >
+          {{ formatCompactNumber(removedEvents) }} events deleted, issue registry preserved.
+        </p>
+
         <div class="flex flex-wrap items-center gap-2">
           <BaseButton
             variant="secondary"
@@ -290,13 +301,17 @@ onMounted(loadPreferences);
       <p class="text-sm text-slate-300">
         {{ storageStats.issues }} issues and {{ storageStats.events }} events are currently stored.
       </p>
+      <p v-if="confirmAction === 'clear'" class="text-xs text-amber-300">
+        {{ storageStats.issues }} issues will be kept. Their counters (events, users, regressions,
+        histogram, tag frequencies) reset to zero.
+      </p>
       <template #footer>
         <BaseButton variant="ghost" @click="confirmAction = null">Cancel</BaseButton>
         <BaseButton
           variant="danger"
           :loading="isBusy"
           data-testid="settings-confirm"
-          @click="confirmAction === 'reset' ? resetDatabaseAndReseed() : clearDataset()"
+          @click="confirmAction === 'reset' ? resetDatabaseAndReseed() : clearEventsOnly()"
         >
           {{ confirmAction === 'reset' ? 'Reset and reseed' : 'Delete events' }}
         </BaseButton>

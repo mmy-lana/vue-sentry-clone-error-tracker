@@ -2,6 +2,7 @@ import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { db, observeAllIssues, observeStatusTallies } from '../services/db';
 import { calculate24HourBuckets, computeFingerprint } from '../utils/analytics';
+import { redactRequest } from '../utils/redaction';
 import type {
   BulkActionType,
   ErrorEvent,
@@ -213,6 +214,8 @@ export const useIssueStore = defineStore('issues', () => {
       const event: ErrorEvent = {
         ...rawEvent,
         timestamp,
+        // Credentials never reach IndexedDB, only the redacted projection.
+        request: redactRequest(rawEvent.request),
         platform: rawEvent.platform ?? 'javascript',
         level: rawEvent.level,
         message: rawEvent.message ?? rawEvent.exception?.value ?? 'Unknown error',

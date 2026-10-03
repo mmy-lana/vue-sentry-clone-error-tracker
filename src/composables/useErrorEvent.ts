@@ -16,7 +16,8 @@ export function useErrorEvent(issueId: () => string) {
     issueStore.issues.find((candidate) => candidate.id === issueId()) ?? null
   );
 
-  const events = computed(() => eventStore.eventsForIssue(issueId()));
+  // Issue-scoped query bound by `load()`: complete history, oldest first.
+  const events = computed(() => eventStore.issueEvents);
   const currentEvent = computed(() => events.value[currentEventIndex.value] ?? null);
 
   const frames = computed(() => currentEvent.value?.exception.stacktrace.frames ?? []);

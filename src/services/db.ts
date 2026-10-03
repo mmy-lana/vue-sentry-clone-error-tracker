@@ -1,4 +1,5 @@
 import Dexie, { liveQuery, type Observable, type Table } from 'dexie';
+import { calculate24HourBuckets } from '../utils/analytics';
 import type { ErrorEvent, Issue, IssueStatus, SettingRecord } from '../types';
 
 /**
@@ -102,5 +103,38 @@ export async function writeSetting(key: string, value: unknown): Promise<void> {
 export async function resetDatabase(): Promise<void> {
   await db.transaction('rw', [db.issues, db.events, db.settings], async () => {
     await Promise.all([db.issues.clear(), db.events.clear(), db.settings.clear()]);
+  });
+}
+
+/**
+ * Deletes every event while keeping the issue registry intact.
+ *
+ * Issue identity (title, culprit, fingerprint, level, status, assignment) and
+ * triage metadata survive; derived counters are zeroed so no stale aggregate
+ * (event tally, rolling window, histogram, user list, tag frequencies or
+ * regression count) is reported after the purge.
+ *
+ * @returns the number of deleted events.
+ */
+export async function clearEventsPreservingIssues(): Promise<number> {
+  return db.transaction('rw', [db.issues, db.events], async () => {
+    const removedEvents = await db.events.count();
+    const issues = await db.issues.toArray();
+
+    await db.events.clear();
+
+    for (const issue of issues) {
+      await db.issues.update(issue.id, {
+        event_count: 0,
+        user_count: 0,
+        unique_users: [],
+        regression_count: 0,
+        recent_timestamps: [],
+        histogram_24h: calculate24HourBuckets([], Date.now()),
+        tags_summary: {}
+      });
+    }
+
+    return removedEvents;
   });
 }

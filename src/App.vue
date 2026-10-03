@@ -7,6 +7,7 @@
  * phones. The simulator modal is reachable from every screen.
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { storeToRefs } from 'pinia';
 import { RouterView, useRoute } from 'vue-router';
 import AppHeader from './components/layout/AppHeader.vue';
 import AppSidebar from './components/layout/AppSidebar.vue';
@@ -19,19 +20,8 @@ import { useIssueStore } from './stores/issueStore';
 const issueStore = useIssueStore();
 const eventStore = useEventStore();
 const simulator = useSimulator();
-const {
-  presets,
-  environments,
-  isRunning,
-  ratePerMinute,
-  environment,
-  emittedCount,
-  lastError,
-  emit,
-  toggle,
-  setRate,
-  setEnvironment
-} = simulator;
+const { presets, environments, isRunning, ratePerMinute, environment, emittedCount, lastError } =
+  storeToRefs(simulator);
 const route = useRoute();
 
 const isDrawerOpen = ref<boolean>(false);
@@ -108,10 +98,10 @@ onBeforeUnmount(() => {
       :last-error="lastError"
       :custom-error="customPayloadError"
       @close="isSimulatorOpen = false"
-      @emit="(presetId) => void emit(presets.find((preset) => preset.id === presetId))"
-      @toggle-run="() => void toggle()"
-      @update:rate="setRate"
-      @update:environment="setEnvironment"
+      @emit="(presetId) => void simulator.emit(presets.find((preset) => preset.id === presetId))"
+      @toggle-run="() => void simulator.toggle()"
+      @update:rate="simulator.setRate"
+      @update:environment="simulator.setEnvironment"
       @submit-custom="submitCustomPayload"
     />
   </div>

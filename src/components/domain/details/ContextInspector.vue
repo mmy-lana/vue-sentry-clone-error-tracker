@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import type { ErrorEvent } from '../../../types';
 import { formatAbsoluteDateTime } from '../../../utils/date';
+import { REDACTED, redactHeaders, redactText, redactUrl } from '../../../utils/redaction';
 import BaseBadge from '../../ui/BaseBadge.vue';
 
 interface Props {
@@ -32,16 +33,25 @@ const deviceRows = computed<ContextRow[]>(() => {
 const requestRows = computed<ContextRow[]>(() => {
   const request = props.event.request;
   if (!request) return [];
+
+  const safeHeaders = redactHeaders(request.headers ?? {});
   const query = Object.entries(request.query_params ?? {})
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
+  const body = request.body ? redactText(request.body) : undefined;
+
   const rows: ContextRow[] = [
     { label: 'Method', value: request.method },
-    { label: 'URL', value: request.url }
+    { label: 'URL', value: redactUrl(request.url) }
   ];
-  if (query.length > 0) rows.push({ label: 'Query', value: query });
-  rows.push({ label: 'Headers', value: Object.entries(request.headers).map(([k, v]) => `${k}: ${v}`).join('\n') });
-  if (request.body) rows.push({ label: 'Body', value: request.body });
+  if (query.length > 0) rows.push({ label: 'Query', value: redactText(query) });
+  rows.push({
+    label: 'Headers',
+    value: Object.entries(safeHeaders)
+      .map(([name, value]) => `${name}: ${value}`)
+      .join('\n')
+  });
+  if (body) rows.push({ label: 'Body', value: body });
   return rows;
 });
 
@@ -91,8 +101,16 @@ const metaRows = computed<ContextRow[]>(() => [
       </section>
 
       <section class="rounded-lg border border-surface-700/70 bg-surface-900/60 p-3">
-        <h4 class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+        <h4 class="mb-2 flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
           Request
+          <span
+            v-if="props.event.request"
+            class="rounded border border-surface-700 px-1 py-px text-[9px] normal-case tracking-normal text-slate-500"
+            :title="`Credential headers and secret payload fields render as ${REDACTED}`"
+            data-testid="context-redaction-notice"
+          >
+            redacted
+          </span>
         </h4>
         <dl v-if="requestRows.length > 0" class="grid grid-cols-[minmax(0,120px)_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
           <template v-for="row in requestRows" :key="row.label">

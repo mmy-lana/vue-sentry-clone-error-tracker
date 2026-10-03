@@ -1,5 +1,26 @@
 import type { StackFrame, HourlyBucket, IssueStatus, ErrorLevel } from '../types';
 
+const FNV_OFFSET_BASIS_64 = 0xcbf29ce484222325n;
+const FNV_PRIME_64 = 0x100000001b3n;
+const UINT64_MASK = 0xffffffffffffffffn;
+
+/**
+ * FNV-1a over 64 bits, rendered as 16 hex characters.
+ *
+ * The previous 32-bit rolling hash collided once a project accumulated a few
+ * thousand exception signatures, silently merging unrelated issue groups.
+ * FNV-1a 64 keeps the function synchronous and deterministic while widening the
+ * collision space by 2^32.
+ */
+export function hash64(input: string): string {
+  let hash = FNV_OFFSET_BASIS_64;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= BigInt(input.charCodeAt(index));
+    hash = (hash * FNV_PRIME_64) & UINT64_MASK;
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
 export function computeFingerprint(
   type: string,
   message: string,
@@ -15,13 +36,7 @@ export function computeFingerprint(
     rawFingerprintSource += message.replace(/[0-9a-fA-F-]{8,}/g, ':uuid:');
   }
 
-  let hash = 0;
-  for (let i = 0; i < rawFingerprintSource.length; i++) {
-    const char = rawFingerprintSource.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(8, '0');
+  return hash64(rawFingerprintSource);
 }
 
 export function calculate24HourBuckets(

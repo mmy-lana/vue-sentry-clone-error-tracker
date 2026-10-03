@@ -142,6 +142,16 @@ async function overflowingElements(page) {
   });
 }
 
+/** The stack panel renders either frames or its documented empty state. */
+async function waitForStackSurface(page, timeout = 15_000) {
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll('[data-frame-id]').length > 0 ||
+      (document.body.textContent ?? '').includes('No stack frames captured'),
+    { timeout }
+  );
+}
+
 async function countRows(page, selector) {
   return page.$$eval(selector, (nodes) => nodes.length);
 }
@@ -171,6 +181,172 @@ async function readDatabaseCounts(page) {
             .catch(rejectPromise);
         };
       })
+  );
+}
+
+
+/** Reads stored events (optionally for one issue) for assertions. */
+async function readStoredEvents(page, issueId) {
+  return page.evaluate(
+    (targetIssueId) =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const request = indexedDB.open('vue_sentry_clone_db');
+        request.onerror = () => rejectPromise(new Error('failed to open database'));
+        request.onsuccess = () => {
+          const database = request.result;
+          const tx = database.transaction('events', 'readonly');
+          const store = tx.objectStore('events');
+          const source = targetIssueId ? store.index('issue_id').getAll(targetIssueId) : store.getAll();
+          source.onsuccess = () => {
+            database.close();
+            resolvePromise(source.result);
+          };
+          source.onerror = () => rejectPromise(source.error);
+        };
+      }),
+    issueId
+  );
+}
+
+/** Reads the first stored event matching a message. */
+async function readEventByMessage(page, message) {
+  return page.evaluate(
+    (targetMessage) =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const request = indexedDB.open('vue_sentry_clone_db');
+        request.onerror = () => rejectPromise(new Error('failed to open database'));
+        request.onsuccess = () => {
+          const database = request.result;
+          const tx = database.transaction('events', 'readonly');
+          const all = tx.objectStore('events').getAll();
+          all.onsuccess = () => {
+            database.close();
+            resolvePromise(all.result.find((event) => event.message === targetMessage) ?? null);
+          };
+          all.onerror = () => rejectPromise(all.error);
+        };
+      }),
+    message
+  );
+}
+
+async function readIssueFingerprints(page) {
+  return page.evaluate(
+    () =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const request = indexedDB.open('vue_sentry_clone_db');
+        request.onerror = () => rejectPromise(new Error('failed to open database'));
+        request.onsuccess = () => {
+          const database = request.result;
+          const tx = database.transaction('issues', 'readonly');
+          const all = tx.objectStore('issues').getAll();
+          all.onsuccess = () => {
+            database.close();
+            resolvePromise(all.result.map((issue) => ({ id: issue.id, fingerprint: issue.fingerprint })));
+          };
+          all.onerror = () => rejectPromise(all.error);
+        };
+      })
+  );
+}
+
+/**
+ * Writes an issue plus events straight into IndexedDB.
+ *
+ * Used to reproduce defects the UI cannot create on demand, such as events that
+ * fall outside the live-stream window.
+ */
+async function injectIssue(page, payload) {
+  return page.evaluate(
+    (input) =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const request = indexedDB.open('vue_sentry_clone_db');
+        request.onerror = () => rejectPromise(new Error('failed to open database'));
+        request.onsuccess = () => {
+          const database = request.result;
+          const tx = database.transaction(['issues', 'events'], 'readwrite');
+          const issues = tx.objectStore('issues');
+          const events = tx.objectStore('events');
+          const now = Date.now();
+
+          const issue = {
+            id: input.issueId,
+            project_id: 'default',
+            fingerprint: input.fingerprint,
+            title: `${input.type}: ${input.message}`,
+            culprit: 'verify/suite.mjs in injectIssue',
+            level: 'error',
+            status: 'unresolved',
+            first_seen: input.timestamp,
+            last_seen: input.timestamp + input.count - 1,
+            event_count: input.count,
+            user_count: 1,
+            unique_users: ['usr_verify'],
+            environments: ['production'],
+            regression_count: 0,
+            recent_timestamps: Array.from({ length: input.count }, (_, index) => input.timestamp + index),
+            histogram_24h: Array.from({ length: 24 }, (_, index) => ({
+              hour_timestamp: now - (24 - index) * 3600000,
+              count: 0
+            })),
+            tags_summary: { environment: { production: input.count } }
+          };
+          issues.put(issue);
+
+          for (let index = 0; index < input.count; index += 1) {
+            events.put({
+              id: `${input.issueId}_evt_${index}`,
+              issue_id: input.issueId,
+              project_id: 'default',
+              timestamp: input.timestamp + index,
+              platform: 'javascript',
+              level: 'error',
+              message: input.message,
+              culprit: 'verify/suite.mjs in injectIssue',
+              fingerprint: input.fingerprint,
+              exception: {
+                type: input.type,
+                value: input.message,
+                stacktrace: {
+                  frames: [
+                    {
+                      id: `${input.issueId}_frame_${index}`,
+                      filename: 'verify/suite.mjs',
+                      function: 'injectIssue',
+                      lineno: 42,
+                      colno: 7,
+                      in_app: true,
+                      pre_context: ['const tx = db.transaction();'],
+                      context_line: '  events.put(event);',
+                      post_context: ['}'],
+                      vars: {}
+                    }
+                  ]
+                }
+              },
+              breadcrumbs: [],
+              tags: { environment: 'production' },
+              user: { id: 'usr_verify', email: 'verify@example.com' },
+              request: input.request,
+              device: {
+                browser: 'Chrome',
+                browser_version: '122.0.0',
+                os: 'macOS',
+                os_version: '14.3',
+                viewport: '1440x900'
+              },
+              sdk: { name: 'vue-sentry-tracker', version: '1.0.0' }
+            });
+          }
+
+          tx.oncomplete = () => {
+            database.close();
+            resolvePromise(input.issueId);
+          };
+          tx.onerror = () => rejectPromise(tx.error);
+        };
+      }),
+    payload
   );
 }
 
@@ -781,7 +957,7 @@ const suites = {
     await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
 
     for (const viewport of viewports) {
-      await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
+      await setViewport(page, viewport.width, viewport.height, 1);
       await gotoRoute(page, '/issues');
       await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
 
@@ -911,7 +1087,7 @@ const suites = {
     assert(firstIssueId, 'issue row exposes its id');
     await gotoRoute(page, `/issues/${firstIssueId}`);
     await page.waitForSelector('[data-testid="issue-detail-view"]', { timeout: 15_000 });
-    await page.waitForSelector('[data-frame-id]', { timeout: 15_000 });
+    await waitForStackSurface(page);
 
     const detailText = await textOf(page, '[data-testid="issue-detail-view"]');
     for (const label of ['Stack trace', 'Breadcrumbs', 'Tag distribution', 'Event context']) {
@@ -950,9 +1126,9 @@ const suites = {
     );
 
     for (const viewport of viewports) {
-      await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
+      await setViewport(page, viewport.width, viewport.height, 1);
       await gotoRoute(page, `/issues/${firstIssueId}`);
-      await page.waitForSelector('[data-frame-id]', { timeout: 15_000 });
+      await waitForStackSurface(page);
       await assertNoOverflow(`issue detail at ${viewport.name}px`);
       await context.settle();
       await context.shot(`phase5-detail-${viewport.name}`);
@@ -1058,12 +1234,67 @@ const suites = {
     await page.waitForSelector('[data-testid="storage-issues"]', { timeout: 5000 });
     const storageIssues = await textOf(page, '[data-testid="storage-issues"]');
     assert(Number(storageIssues.replace(/[^0-9]/g, '')) > 0, `storage stats populated (got "${storageIssues}")`);
+    context.step('DATA-01: event purge keeps the issue registry');
+    const issuesBeforePurge = (await readDatabaseCounts(page)).issues;
+    await page.click('[data-testid="settings-clear"]');
+    await page.waitForSelector('[data-testid="settings-confirm"]', { timeout: 5000 });
+    await page.click('[data-testid="settings-confirm"]');
+    await page.waitForSelector('[data-testid="settings-purge-result"]', { timeout: 10_000 });
+
+    const countsAfterPurge = await readDatabaseCounts(page);
+    assertEqual(countsAfterPurge.events, 0, 'every raw event is deleted');
+    assertEqual(
+      countsAfterPurge.issues,
+      issuesBeforePurge,
+      'the issue registry survives an event-only purge'
+    );
+
+    const rolledIssues = await page.evaluate(
+      () =>
+        new Promise((resolvePromise, rejectPromise) => {
+          const request = indexedDB.open('vue_sentry_clone_db');
+          request.onerror = () => rejectPromise(new Error('open failed'));
+          request.onsuccess = () => {
+            const database = request.result;
+            const tx = database.transaction('issues', 'readonly');
+            const all = tx.objectStore('issues').getAll();
+            all.onsuccess = () => {
+              database.close();
+              resolvePromise(
+                all.result.map((issue) => ({
+                  event_count: issue.event_count,
+                  user_count: issue.user_count,
+                  recent: issue.recent_timestamps.length,
+                  histogram: issue.histogram_24h.length
+                }))
+              );
+            };
+            all.onerror = () => rejectPromise(all.error);
+          };
+        })
+    );
+    assert(rolledIssues.length > 0, 'issues remain for the counter audit');
+    for (const issue of rolledIssues) {
+      assertEqual(issue.event_count, 0, 'event counters reset to zero');
+      assertEqual(issue.user_count, 0, 'user counters reset to zero');
+      assertEqual(issue.recent, 0, 'rolling windows are emptied');
+      assertEqual(issue.histogram, 24, 'histograms keep their 24 bucket shape');
+    }
+
+    context.step('DATA-01: reset and reseed restores a usable dataset');
     await page.click('[data-testid="settings-reset"]');
     await page.waitForSelector('[data-testid="settings-confirm"]', { timeout: 5000 });
-    await page.keyboard.press('Escape');
+    await page.click('[data-testid="settings-confirm"]');
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="storage-events"]')?.textContent ?? '').trim() !== '0',
+      { timeout: 10_000 }
+    );
+    const countsAfterReseed = await readDatabaseCounts(page);
+    assert(countsAfterReseed.events > 100, `reseed repopulates events (${countsAfterReseed.events})`);
+    assert(countsAfterReseed.issues >= 7, `reseed repopulates issues (${countsAfterReseed.issues})`);
 
     for (const viewport of viewports) {
-      await page.setViewport({ width: viewport.width, height: viewport.height, deviceScaleFactor: 1 });
+      await setViewport(page, viewport.width, viewport.height, 1);
       await gotoRoute(page, '/settings');
       await page.waitForSelector('[data-testid="settings-view"]');
       await assertNoOverflow(`settings at ${viewport.name}px`);
@@ -1078,7 +1309,196 @@ const suites = {
     await page.waitForSelector('[data-testid="settings-view"]');
     await context.settle();
     await context.shot('phase5-settings');
-  }
+  },
+
+  async security(page, context) {
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });
+
+    context.step('SEC-02: 64-bit fingerprints');
+    const fingerprints = await readIssueFingerprints(page);
+    assert(fingerprints.length > 0, 'issues are present for the fingerprint audit');
+    const malformed = fingerprints.filter((issue) => !/^[0-9a-f]{16}$/.test(issue.fingerprint));
+    assertEqual(
+      malformed.length,
+      0,
+      `every fingerprint is a 16 character hex digest (offenders: ${JSON.stringify(malformed.slice(0, 3))})`
+    );
+
+    context.step('SEC-01: credentials redacted on the ingestion path');
+    const secrets = {
+      authorization: 'Bearer ingested-secret-token',
+      cookie: 'session=ingested-cookie-value',
+      queryToken: 'ingested-query-token',
+      password: 'ingested-plaintext-password'
+    };
+    const customPayload = JSON.stringify({
+      level: 'fatal',
+      message: 'credential audit payload',
+      culprit: 'verify/suite.mjs in submit',
+      exception: {
+        type: 'CredentialError',
+        value: 'credential audit payload',
+        stacktrace: { frames: [] }
+      },
+      request: {
+        url: `/api/v1/pay?access_token=${secrets.queryToken}&locale=en`,
+        method: 'POST',
+        headers: {
+          Authorization: secrets.authorization,
+          Cookie: secrets.cookie,
+          'X-Api-Key': 'ingested-api-key',
+          accept: 'application/json'
+        },
+        body: JSON.stringify({ user: 'alex', password: secrets.password, amount: 42 })
+      }
+    });
+
+    await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="open-simulator"]', { timeout: 15_000 });
+    await page.click('[data-testid="open-simulator"]');
+    await page.waitForSelector('[data-testid="simulator-json"]', { timeout: 5000 });
+    await page.evaluate((payload) => {
+      const textarea = document.querySelector('[data-testid="simulator-json"]');
+      if (textarea) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        setter?.call(textarea, payload);
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }, customPayload);
+    await page.click('[data-testid="simulator-submit"]');
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="simulator-json-error"]') === null,
+      { timeout: 10_000 }
+    );
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('[data-testid="simulator-modal"]') === null, {
+      timeout: 5000
+    });
+
+    const storedEvent = await readEventByMessage(page, 'credential audit payload');
+    assert(storedEvent, 'the custom payload was ingested');
+    const storedJson = JSON.stringify(storedEvent);
+    for (const secret of Object.values(secrets)) {
+      assert(!storedJson.includes(secret), `secret "${secret}" is not persisted in IndexedDB`);
+    }
+    assert(!storedJson.includes('ingested-api-key'), 'api key header is not persisted');
+    assert(storedJson.includes('[redacted]'), 'persisted event carries redaction markers');
+
+    const persistedRequest = storedEvent.request ?? {};
+    assertEqual(persistedRequest.headers.Authorization, '[redacted]', 'authorization header is masked');
+    assertEqual(persistedRequest.headers.Cookie, '[redacted]', 'cookie header is masked');
+    assertEqual(persistedRequest.headers.accept, 'application/json', 'safe headers survive redaction');
+    assert(!persistedRequest.url.includes(secrets.queryToken), 'query string token is masked');
+    assert(persistedRequest.url.includes('%5Bredacted%5D') || persistedRequest.url.includes('[redacted]'),
+      `sensitive query parameter is masked (url: ${persistedRequest.url})`);
+
+    const persistedBody = JSON.parse(persistedRequest.body ?? '{}');
+    assertEqual(persistedBody.password, '[redacted]', 'password field is masked');
+    assertEqual(persistedBody.amount, 42, 'non-sensitive payload fields survive redaction');
+    assertEqual(persistedBody.user, 'alex', 'non-sensitive identity fields survive redaction');
+
+    context.step('SEC-01: credentials redacted in the rendered context');
+    await gotoRoute(page, `/issues/${storedEvent.issue_id}`);
+    await page.waitForSelector('[data-testid="context-redaction-notice"]', { timeout: 10_000 });
+    const rendered = await page.evaluate(() => document.body.textContent ?? '');
+    for (const secret of Object.values(secrets)) {
+      assert(!rendered.includes(secret), `secret "${secret}" is not rendered in the DOM`);
+    }
+    assert(rendered.includes('[redacted]'), 'context inspector renders redaction markers');
+    assert(rendered.includes('accept: application/json'), 'non-sensitive headers stay readable');
+
+    context.step('DATA-02: issue-scoped query reaches events outside the live window');
+    const oldIssueId = await injectIssue(page, {
+      issueId: 'issue_verify_archived',
+      fingerprint: 'a'.repeat(16),
+      type: 'ArchivedError',
+      message: 'event older than the live stream window',
+      timestamp: Date.now() - 7 * 24 * 3600 * 1000,
+      count: 3
+    });
+
+    await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="stream-feed"]', { timeout: 15_000 });
+    const feedRows = await countRows(page, '[data-testid="stream-row"]');
+    assert(feedRows > 0, 'live stream is populated before the archived-issue check');
+    const feedText = await page.evaluate(() => document.querySelector('[data-testid="stream-feed"]')?.textContent ?? '');
+    assert(!feedText.includes('ArchivedError'), 'the archived event is outside the live stream window');
+
+    await gotoRoute(page, `/issues/${oldIssueId}`);
+    await page.waitForSelector('[data-frame-id]', { timeout: 15_000 });
+    const stepperText = await textOf(page, '[data-testid="event-pagination-header"]');
+    assert(
+      stepperText.includes('Event 1 of 3'),
+      `detail view loads the full archived history (got "${stepperText.trim()}")`
+    );
+
+    context.step('STATE-01: one shared engine for every consumer');
+    await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="stream-toggle-stream"]', { timeout: 15_000 });
+    await page.click('[data-testid="stream-toggle-stream"]');
+    await page.waitForFunction(
+      () =>
+        (document.querySelector('[data-testid="stream-toggle-stream"]')?.textContent ?? '').includes('Stop auto'),
+      { timeout: 5000 }
+    );
+
+    // The header modal is a different component: it must observe and control the
+    // very same engine, which is impossible with per-instance timer ownership.
+    await page.click('[data-testid="open-simulator"]');
+    await page.waitForSelector('[data-testid="simulator-toggle"]', { timeout: 5000 });
+    const modalWhileRunning = await textOf(page, '[data-testid="simulator-toggle"]');
+    assert(
+      modalWhileRunning.includes('Pause stream'),
+      `modal sees the running engine (got "${modalWhileRunning.trim()}")`
+    );
+    await page.click('[data-testid="simulator-toggle"]');
+    await page.waitForFunction(
+      () =>
+        (document.querySelector('[data-testid="simulator-toggle"]')?.textContent ?? '').includes('Start stream'),
+      { timeout: 5000 }
+    );
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('[data-testid="simulator-modal"]') === null, {
+      timeout: 5000
+    });
+
+    const streamAfterModalPause = await textOf(page, '[data-testid="stream-toggle-stream"]');
+    assert(
+      streamAfterModalPause.includes('Auto stream'),
+      `pausing from the modal stops the stream view engine (got "${streamAfterModalPause.trim()}")`
+    );
+
+    context.step('STATE-01: no interval leaks when the route unmounts');
+    await page.click('[data-testid="stream-toggle-stream"]');
+    await page.waitForFunction(
+      () =>
+        (document.querySelector('[data-testid="stream-toggle-stream"]')?.textContent ?? '').includes('Stop auto'),
+      { timeout: 5000 }
+    );
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-testid="issues-view"]', { timeout: 15_000 });
+    const eventsDuringAway = (await readDatabaseCounts(page)).events;
+    await sleep(1500);
+    const eventsAfterWait = (await readDatabaseCounts(page)).events;
+    assertEqual(
+      eventsAfterWait,
+      eventsDuringAway,
+      'no background writes continue once the stream route is unmounted'
+    );
+
+    await gotoRoute(page, '/stream');
+    await page.waitForSelector('[data-testid="stream-toggle-stream"]', { timeout: 15_000 });
+    const engineOnReturn = await textOf(page, '[data-testid="stream-toggle-stream"]');
+    assert(
+      engineOnReturn.includes('Auto stream'),
+      `returning to the route shows a stopped engine (got "${engineOnReturn.trim()}")`
+    );
+
+    await context.settle();
+    await context.shot('security-audit');
+  },
+
 };
 
 /* ------------------------------------------------------------------ */
