@@ -21,6 +21,19 @@ pnpm run verify phase3   # run a single phase suite
 profile (your own browsers are never touched) and asserts behaviour, responsive layout and
 runtime errors. Screenshots land in `.verify/`.
 
+Suites run in this order:
+
+| Suite | Scope |
+| --- | --- |
+| `phase1` | Storage schema, seeding, histogram integrity, routing |
+| `phase2` | Atomic primitives (focus trap, keyboard, dropdowns, pagination) |
+| `phase3` | Feature components (rows, sparkline, stack frames, breadcrumbs, tags) |
+| `phase4` | Ingestion pipeline: create, merge, regression, delete, orphan guard |
+| `phase5` | Product screens plus the 360/390/430/768/1280 responsive matrix |
+| `logic` | Hydration race, scoped metrics, hour-aligned buckets, tag shares, tag labels |
+| `accessibility` | Grid alignment, row activation targets, tab panels, relative time |
+| `security` | Fingerprint width, credential redaction, issue-scoped queries, singleton engine |
+
 ## Architecture
 
 | Layer | Location | Responsibility |
@@ -67,5 +80,20 @@ string, and store changes are debounced back into the URL (`?q=&status=&level=&e
 3. insert the event,
 4. append an entry to the session ingestion log.
 
-The simulator (`useSimulator`) and the demo seeder write through this same path, so every
-row on screen reflects a real IndexedDB transaction.
+The simulator (`stores/simulatorStore.ts`, a Pinia singleton so only one interval can exist)
+and the demo seeder write through this same path, so every row on screen reflects a real
+IndexedDB transaction.
+
+### Security and integrity guarantees
+
+- **Credential redaction** (`src/utils/redaction.ts`): authorization, cookie, API-key and
+  session headers, sensitive query parameters and JSON/form payload fields are masked both
+  before the event is written to IndexedDB and again at render time, so legacy rows are
+  covered too. Non-sensitive fields are preserved.
+- **Fingerprints** use FNV-1a 64-bit (`hash64`), rendered as 16 hex characters, so unrelated
+  exception signatures cannot collide into one issue group.
+- **Event-only purge**: `clearEventsPreservingIssues()` deletes events and zeroes derived
+  counters while keeping issue identity, status and assignments.
+- **Scoped reads**: the detail view queries `events.where('issue_id')` through a live
+  subscription, so issues whose events fall outside the live-stream window remain fully
+  inspectable.
