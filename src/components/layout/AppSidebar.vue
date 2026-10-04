@@ -65,7 +65,9 @@ const isDrawer = computed<boolean>(() => sidebarMode.value === 'hidden');
 const isVisible = computed<boolean>(() => !isDrawer.value || props.isDrawerOpen);
 
 function isActive(name: string): boolean {
-  return route.name === name;
+  if (route.name === name) return true;
+  // Detail routes keep their parent entry highlighted.
+  return name === 'issues-list' && route.name === 'issue-detail';
 }
 </script>
 

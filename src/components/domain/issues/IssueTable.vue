@@ -32,11 +32,17 @@ const emit = defineEmits<{
   (event: 'sort', field: IssueSortField): void;
 }>();
 
-const COLUMNS: { field: IssueSortField | null; label: string; align: 'left' | 'right' }[] = [
-  { field: null, label: '', align: 'left' },
-  { field: 'last_seen', label: 'Last seen', align: 'right' },
-  { field: 'event_count', label: 'Events', align: 'right' },
-  { field: 'user_count', label: 'Users', align: 'right' }
+/**
+ * Shared grid tracks for the header and every row:
+ * checkbox | level/status | issue identity | 24h sparkline | events | users | last seen.
+ */
+const ISSUE_GRID_CLASSES =
+  'md:grid-cols-[auto_88px_minmax(0,1fr)_120px_88px_100px_90px]';
+
+const COLUMNS: { field: IssueSortField; label: string }[] = [
+  { field: 'event_count', label: 'Events' },
+  { field: 'user_count', label: 'Users' },
+  { field: 'last_seen', label: 'Last seen' }
 ];
 
 const allIds = computed<string[]>(() => props.issues.map((issue) => issue.id));
@@ -53,9 +59,12 @@ function isSelected(issueId: string): boolean {
 
 <template>
   <div class="overflow-hidden rounded-lg border border-surface-700/70 bg-surface-900/60">
-    <!-- Column header (tablet and up) -->
+    <!-- Column header (tablet and up). Track list is shared with IssueRow so
+         every heading sits above the column it describes. -->
     <div
-      class="hidden items-center gap-3 border-b border-surface-700/70 bg-surface-850/60 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-slate-500 md:grid md:grid-cols-[auto_88px_minmax(0,1fr)_120px_72px_110px]"
+      data-testid="issues-header"
+      class="hidden items-center gap-3 border-b border-surface-700/70 bg-surface-850/60 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-slate-500 md:grid"
+      :class="ISSUE_GRID_CLASSES"
     >
       <BaseCheckbox
         v-if="selectable"
@@ -66,25 +75,28 @@ function isSelected(issueId: string): boolean {
       />
       <span v-else aria-hidden="true" />
 
-      <span class="sr-only">Level</span>
+      <!-- Spacer keeps the fixed 88px level/status track. It must stay in flow:
+           `sr-only` is absolutely positioned and would shift every later header
+           one column to the left. -->
+      <span aria-hidden="true" />
 
       <button
         type="button"
         class="flex items-center gap-1 text-left transition-colors hover:text-slate-300"
-        @click="emit('sort', 'last_seen')"
+        @click="emit('sort', 'first_seen')"
       >
         Issue
-        <span v-if="sortBy === 'last_seen'" class="text-brand-400" aria-hidden="true">↓</span>
+        <span v-if="sortBy === 'first_seen'" class="text-brand-400" aria-hidden="true">↑</span>
       </button>
 
       <span class="text-center">24h</span>
 
       <button
-        v-for="column in COLUMNS.filter((item) => item.field !== null && item.field !== 'last_seen')"
-        :key="column.field ?? column.label"
+        v-for="column in COLUMNS"
+        :key="column.field"
         type="button"
         class="text-right transition-colors hover:text-slate-300"
-        @click="emit('sort', column.field as IssueSortField)"
+        @click="emit('sort', column.field)"
       >
         {{ column.label }}
         <span v-if="sortBy === column.field" class="text-brand-400" aria-hidden="true">↓</span>

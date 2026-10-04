@@ -116,10 +116,19 @@ onMounted(loadPreferences);
 <template>
   <ResponsiveContainer data-testid="settings-view">
     <div class="flex flex-col gap-3">
-      <BaseTabs v-model="activeTab" :tabs="tabs" aria-label="Settings sections" />
+      <BaseTabs
+        v-model="activeTab"
+        :tabs="tabs"
+        aria-label="Settings sections"
+        id-prefix="settings"
+      />
 
       <section
-        v-if="activeTab === 'preferences'"
+        v-show="activeTab === 'preferences'"
+        id="settings-panel-0"
+        role="tabpanel"
+        aria-labelledby="settings-tab-0"
+        tabindex="0"
         class="flex flex-col gap-4 rounded-lg border border-surface-700/70 bg-surface-900/70 p-3 sm:p-4"
       >
         <div class="grid gap-3 sm:grid-cols-2">
@@ -218,7 +227,11 @@ onMounted(loadPreferences);
       </section>
 
       <section
-        v-else
+        v-show="activeTab === 'storage'"
+        id="settings-panel-1"
+        role="tabpanel"
+        aria-labelledby="settings-tab-1"
+        tabindex="0"
         class="flex flex-col gap-4 rounded-lg border border-surface-700/70 bg-surface-900/70 p-3 sm:p-4"
       >
         <dl class="grid grid-cols-2 gap-2 text-xs lg:grid-cols-4">

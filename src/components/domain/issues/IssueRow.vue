@@ -30,6 +30,9 @@ const emit = defineEmits<{
   (event: 'open', issueId: string): void;
 }>();
 
+/** Must stay identical to the header definition in IssueTable.vue. */
+const ISSUE_GRID_CLASSES = 'md:grid-cols-[auto_88px_minmax(0,1fr)_120px_88px_100px_90px]';
+
 const regressionLabel = computed<string>(() =>
   props.issue.regression_count > 0
     ? `${props.issue.regression_count} ${props.issue.regression_count === 1 ? 'regression' : 'regressions'}`
@@ -59,6 +62,7 @@ function open(): void {
   <article
     data-issue-row
     :data-issue-id="issue.id"
+    class="cursor-pointer"
     :class="[
       'group relative w-full min-w-0 border-b border-surface-800/80 transition-colors last:border-b-0',
       isActive ? 'bg-brand-600/10' : 'hover:bg-surface-850/70',
@@ -66,20 +70,21 @@ function open(): void {
     ]"
   >
     <!-- Mobile: stacked card -->
-    <div class="flex flex-col gap-2 p-3 md:hidden">
+    <div class="flex flex-col gap-2 p-3 md:hidden" @click="open">
       <div class="flex items-start gap-2">
         <BaseCheckbox
           v-if="selectable"
           :model-value="selected"
           :aria-label="`Select ${issue.title}`"
           class="mt-1"
+          @click.stop
           @update:model-value="emit('toggle-select', issue.id)"
         />
         <button
           type="button"
           class="min-w-0 flex-1 text-left"
           :aria-label="`Open issue ${issue.title}`"
-          @click="open"
+          @click.stop="open"
         >
           <span class="flex items-center gap-1.5">
             <BaseBadge :tone="issue.level" size="sm" />
@@ -106,12 +111,19 @@ function open(): void {
       </div>
     </div>
 
-    <!-- Tablet and up: grid row -->
-    <div class="hidden items-center gap-3 px-3 py-2.5 md:grid md:grid-cols-[auto_88px_minmax(0,1fr)_120px_72px_110px] md:px-4">
+    <!-- Tablet and up: grid row. The whole row is clickable (touch target),
+         individual controls stop propagation. -->
+    <div
+      class="hidden items-center gap-3 px-3 py-2.5 md:grid md:px-4"
+      :class="ISSUE_GRID_CLASSES"
+      data-issue-row-body
+      @click="open"
+    >
       <BaseCheckbox
         v-if="selectable"
         :model-value="selected"
         :aria-label="`Select ${issue.title}`"
+        @click.stop
         @update:model-value="emit('toggle-select', issue.id)"
       />
       <span v-else aria-hidden="true" />
@@ -131,7 +143,7 @@ function open(): void {
           type="button"
           class="block w-full truncate text-left text-sm font-medium text-slate-100 transition-colors hover:text-brand-200"
           :aria-label="`Open issue ${issue.title}`"
-          @click="open"
+          @click.stop="open"
         >
           {{ issue.title }}
         </button>
@@ -151,9 +163,33 @@ function open(): void {
         <SparklineBarGraph :buckets="issue.histogram_24h" :tone="issue.level" height-class="h-7" />
       </div>
 
-      <div class="flex flex-col items-end gap-1 text-right">
+      <div class="flex flex-col items-end gap-0.5 text-right">
         <span class="text-xs tabular-nums text-slate-300">
           {{ formatCompactNumber(issue.event_count) }}
+        </span>
+        <span class="text-[10px] text-slate-600">events</span>
+      </div>
+
+      <div class="flex flex-col items-end gap-1">
+        <span class="flex items-center -space-x-1.5">
+          <UserAvatar
+            v-for="userId in issue.unique_users.slice(0, 3)"
+            :key="userId"
+            :user-id="userId"
+            size="xs"
+          />
+          <span
+            v-if="issue.unique_users.length > 3"
+            class="inline-flex size-5 items-center justify-center rounded-full border border-surface-600 bg-surface-800 text-[9px] text-slate-400"
+          >
+            +{{ issue.unique_users.length - 3 }}
+          </span>
+          <span
+            v-if="issue.unique_users.length === 0"
+            class="text-[11px] text-slate-600"
+          >
+            0 users
+          </span>
         </span>
         <span class="text-[11px] tabular-nums text-slate-500">
           {{ issue.user_count }} {{ issue.user_count === 1 ? 'user' : 'users' }}
@@ -171,23 +207,6 @@ function open(): void {
         >
           {{ issue.regression_count > 0 ? `↻ ${issue.regression_count}` : '—' }}
         </span>
-      </div>
-
-      <div class="pointer-events-none absolute right-4 top-1/2 hidden -translate-y-1/2 items-center gap-1 lg:flex">
-        <div class="flex -space-x-1.5">
-          <UserAvatar
-            v-for="userId in issue.unique_users.slice(0, 3)"
-            :key="userId"
-            :user-id="userId"
-            size="xs"
-          />
-          <span
-            v-if="issue.unique_users.length > 3"
-            class="inline-flex size-5 items-center justify-center rounded-full border border-surface-600 bg-surface-800 text-[9px] text-slate-400"
-          >
-            +{{ issue.unique_users.length - 3 }}
-          </span>
-        </div>
       </div>
     </div>
   </article>

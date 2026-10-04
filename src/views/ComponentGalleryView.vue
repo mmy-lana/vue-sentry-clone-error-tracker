@@ -308,10 +308,24 @@ async function deleteSimulated(): Promise<void> {
     </BaseCard>
 
     <BaseCard title="Tabs" description="Arrow keys move between tabs">
-      <BaseTabs v-model="activeTab" :tabs="tabs" aria-label="Issue sections" />
-      <p class="pt-3 text-xs text-slate-400">
-        Active panel: <span class="text-slate-200">{{ activeTab }}</span>
-      </p>
+      <BaseTabs
+        v-model="activeTab"
+        :tabs="tabs"
+        aria-label="Issue sections"
+        id-prefix="gallery"
+      />
+      <div
+        v-for="(tab, tabIndex) in tabs"
+        v-show="tab.key === activeTab"
+        :id="`gallery-panel-${tabIndex}`"
+        :key="tab.key"
+        role="tabpanel"
+        :aria-labelledby="`gallery-tab-${tabIndex}`"
+        tabindex="0"
+        class="pt-3 text-xs text-slate-400"
+      >
+        <span class="text-slate-200">{{ tab.label }}</span> panel is active.
+      </div>
     </BaseCard>
 
     <BaseCard title="Tooltip" description="Hover, focus and tap">
@@ -420,6 +434,8 @@ async function deleteSimulated(): Promise<void> {
           <TimeAgo :timestamp="Date.now() - 45 * 60_000" />
           <TimeAgo :timestamp="Date.now() - 3 * 86_400_000" />
           <TimeAgo :timestamp="0" fallback="never" />
+          <!-- Clock skew case: renders as "in Xm", never "in Xm from now". -->
+          <TimeAgo data-testid="future-time" :timestamp="Date.now() + 5 * 60_000" />
         </span>
 
         <div class="flex items-center -space-x-1.5">

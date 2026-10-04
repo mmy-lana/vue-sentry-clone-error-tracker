@@ -1447,6 +1447,261 @@ const suites = {
     await context.shot('logic-audit');
   },
 
+
+  async accessibility(page, context) {
+    context.step('UI-02: header and rows share one grid contract');
+    await setViewport(page, 1280, 900, 1);
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row-body]', { timeout: 15_000 });
+
+    const headerBox = await page.evaluate(() => {
+      const header = document.querySelector('[data-testid="issues-header"]');
+      const cells = Array.from(header?.children ?? []);
+      return cells.map((cell) => Math.round(cell.getBoundingClientRect().left));
+    });
+    assertEqual(headerBox.length, 7, `header exposes seven columns (got ${headerBox.length})`);
+
+    const rowColumns = await page.evaluate(() => {
+      const row = document.querySelector('[data-issue-row-body]');
+      const cells = Array.from(row?.children ?? []);
+      return cells.map((cell) => Math.round(cell.getBoundingClientRect().left));
+    });
+    assertEqual(rowColumns.length, 7, `row exposes seven cells (got ${rowColumns.length})`);
+    for (let index = 0; index < headerBox.length; index += 1) {
+      assert(
+        Math.abs(headerBox[index] - rowColumns[index]) <= 2,
+        `column ${index} aligns (header ${headerBox[index]} vs row ${rowColumns[index]})`
+      );
+    }
+
+    const headerLabels = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll('[data-testid="issues-view"] .md\\:grid > *')
+      ).map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim())
+    );
+    assert(
+      headerLabels.some((label) => label.startsWith('Events')) &&
+        headerLabels.some((label) => label.startsWith('Users')) &&
+        headerLabels.some((label) => label.startsWith('Last seen')),
+      `sortable headers are Events, Users and Last seen (got ${JSON.stringify(headerLabels)})`
+    );
+
+    const columnProbe = await page.evaluate(() => {
+      const row = document.querySelector('[data-issue-row-body]');
+      const cells = Array.from(row?.children ?? []);
+      const text = (cell) => (cell?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      return {
+        events: text(cells[4]),
+        users: text(cells[5]),
+        lastSeen: text(cells[6])
+      };
+    });
+    assert(/events$/.test(columnProbe.events), `events cell carries the tally (got "${columnProbe.events}")`);
+    assert(/users?$/.test(columnProbe.users), `users cell carries the tally (got "${columnProbe.users}")`);
+    assert(
+      /ago$|^\d+[smhdw]/.test(columnProbe.lastSeen) || columnProbe.lastSeen.length > 0,
+      `last seen cell carries a timestamp (got "${columnProbe.lastSeen}")`
+    );
+
+    const overlays = await page.evaluate(() => {
+      const row = document.querySelector('[data-issue-row]');
+      const cells = Array.from(row?.querySelectorAll('[data-issue-row-body] > *') ?? []).map((cell) =>
+        cell.getBoundingClientRect()
+      );
+      const stray = Array.from(row?.querySelectorAll('*') ?? []).filter((node) => {
+        if (node.closest('[data-issue-row-body]')) return false;
+        return node.getBoundingClientRect().width > 0;
+      });
+      return { cells: cells.length, stray: stray.length };
+    });
+    assertEqual(overlays.stray, 0, 'no absolutely positioned avatar overlay escapes the grid');
+
+    context.step('A11Y-01: the whole row is an activation target');
+    const targetArea = await page.evaluate(() => {
+      const body = document.querySelector('[data-issue-row-body]');
+      const rect = body.getBoundingClientRect();
+      return { height: rect.height, width: rect.width };
+    });
+    assert(targetArea.height >= 44, `row height meets the 44px touch target minimum (${targetArea.height}px)`);
+
+    const issueId = await page.$eval('[data-issue-row]', (el) => el.getAttribute('data-issue-id'));
+    await page.evaluate(() => {
+      const body = document.querySelector('[data-issue-row-body]');
+      const rect = body.getBoundingClientRect();
+      // Tap the empty gutter between the title text and the numeric columns.
+      body.dispatchEvent(
+        new MouseEvent('click', {
+          bubbles: true,
+          clientX: rect.left + rect.width * 0.55,
+          clientY: rect.top + rect.height / 2
+        })
+      );
+    });
+    await page.waitForFunction(() => window.location.pathname.startsWith('/issues/'), { timeout: 5000 });
+    assertEqual(
+      await page.evaluate(() => window.location.pathname),
+      `/issues/${issueId}`,
+      'clicking the row gutter opens the issue'
+    );
+
+    context.step('A11Y-01: selection controls do not trigger navigation');
+    await gotoRoute(page, '/issues');
+    await page.waitForSelector('[data-issue-row-body]', { timeout: 15_000 });
+    await page.evaluate(() => {
+      document.querySelector('[data-issue-row] input[type="checkbox"]')?.click();
+    });
+    await page.waitForSelector('[data-testid="issue-bulk-bar"]', { timeout: 5000 });
+    assertEqual(
+      await page.evaluate(() => window.location.pathname),
+      '/issues',
+      'checking a row selects without navigating'
+    );
+    await page.evaluate(() => {
+      const clear = Array.from(document.querySelectorAll('[data-testid="issue-bulk-bar"] button')).find(
+        (node) => (node.getAttribute('aria-label') ?? '') === 'Clear selection'
+      );
+      clear?.click();
+    });
+
+    context.step('UI-03: sidebar keeps the parent entry active on detail routes');
+    const sidebarActive = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-testid="sidebar-link"]')).map((link) => ({
+        href: link.getAttribute('href'),
+        current: link.getAttribute('aria-current')
+      }))
+    );
+    const issuesLink = sidebarActive.find((link) => link.href === '/issues');
+    assertEqual(
+      issuesLink?.current ?? null,
+      'page',
+      'the Issues entry stays highlighted on the detail route'
+    );
+
+    context.step('UI-04: suggestions replace only the edited token');
+    const focusSearch = () =>
+      page.evaluate(() => {
+        const input = document.querySelector('[data-testid="issues-view"] input[type="search"]');
+        input?.focus();
+        input?.click();
+      });
+    await focusSearch();
+    await page.type('[data-testid="issues-view"] input[type="search"]', 'checkout level:er');
+    await page.waitForSelector('#filter-search-suggestions [role="option"]', { timeout: 5000 });
+    await page.evaluate(() => {
+      const option = Array.from(
+        document.querySelectorAll('#filter-search-suggestions [role="option"]')
+      ).find((node) => (node.textContent ?? '').includes('level:error'));
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await page.waitForFunction(
+      () => (document.querySelector('[data-testid="issues-view"] input[type="search"]')?.value ?? '').includes('checkout level:error'),
+      { timeout: 5000 }
+    );
+    const queryValue = await page.$eval('[data-testid="issues-view"] input[type="search"]', (el) => el.value);
+    assertEqual(queryValue, 'checkout level:error', 'free text is preserved when a chip is applied');
+
+    await focusSearch();
+    await page.evaluate(() => {
+      const input = document.querySelector('[data-testid="issues-view"] input[type="search"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'is:unresolved level:');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForSelector('#filter-search-suggestions [role="option"]', { timeout: 5000 });
+    await page.evaluate(() => {
+      const option = Array.from(
+        document.querySelectorAll('#filter-search-suggestions [role="option"]')
+      ).find((node) => (node.textContent ?? '').includes('level:fatal'));
+      option?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await page.waitForFunction(
+      () =>
+        (document.querySelector('[data-testid="issues-view"] input[type="search"]')?.value ?? '') ===
+        'is:unresolved level:fatal',
+      { timeout: 5000 }
+    );
+
+    context.step('A11Y-02: tab panels are wired to their tabs');
+    await gotoRoute(page, '/settings');
+    await page.waitForSelector('[role="tab"]', { timeout: 15_000 });
+    const tabLinks = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[role="tab"]')).map((tab) => ({
+        id: tab.id,
+        controls: tab.getAttribute('aria-controls')
+      }))
+    );
+    assert(tabLinks.length >= 2, `settings exposes its tabs (got ${tabLinks.length})`);
+    for (const tab of tabLinks) {
+      assert(tab.id.length > 0, 'every tab carries an id');
+      assert(tab.controls && tab.controls.length > 0, `tab ${tab.id} declares aria-controls`);
+      const panelState = await page.evaluate(
+        (panelId) => {
+          const panel = document.getElementById(panelId);
+          if (!panel) return null;
+          return { role: panel.getAttribute('role'), labelledBy: panel.getAttribute('aria-labelledby') };
+        },
+        tab.controls
+      );
+      assert(panelState !== null, `panel #${tab.controls} exists`);
+      assertEqual(panelState.role, 'tabpanel', `panel #${tab.controls} exposes role=tabpanel`);
+      assertEqual(
+        panelState.labelledBy,
+        tab.id,
+        `panel #${tab.controls} is labelled by its tab`
+      );
+    }
+
+    await page.evaluate(() => {
+      const tab = Array.from(document.querySelectorAll('[role="tab"]')).find((node) =>
+        (node.textContent ?? '').includes('Storage')
+      );
+      tab?.click();
+    });
+    await page.waitForFunction(
+      () => {
+        const panel = document.getElementById('settings-panel-1');
+        return panel !== null && getComputedStyle(panel).display !== 'none';
+      },
+      { timeout: 5000 }
+    );
+    const panelVisibility = await page.evaluate(() =>
+      ['settings-panel-0', 'settings-panel-1'].map((id) => {
+        const panel = document.getElementById(id);
+        return {
+          id,
+          present: panel !== null,
+          visible: panel !== null && getComputedStyle(panel).display !== 'none'
+        };
+      })
+    );
+    for (const panel of panelVisibility) {
+      assert(panel.present, `panel ${panel.id} stays mounted so aria-controls resolves`);
+    }
+    assert(
+      panelVisibility.filter((panel) => panel.visible).length === 1,
+      `exactly one panel is visible (got ${JSON.stringify(panelVisibility)})`
+    );
+
+    context.step('TEXT-01: future timestamps render as "in <unit>"');
+    await gotoRoute(page, '/ui-kit');
+    await page.waitForSelector('[data-testid="future-time"]', { timeout: 15_000 });
+    const futureLabel = await textOf(page, '[data-testid="future-time"]');
+    assert(
+      /^in \d+[mhdw]$/.test(futureLabel),
+      `future time renders as "in <unit>" (got "${futureLabel}")`
+    );
+    const timeLabels = await page.$$eval('time', (nodes) =>
+      nodes.map((node) => node.textContent?.trim() ?? '')
+    );
+    const malformed = timeLabels.filter((label) => label.includes('in ') && label.includes('from now'));
+    assertEqual(malformed.length, 0, `no "in X from now" strings (got ${JSON.stringify(malformed)})`);
+    const pastLabel = timeLabels.find((label) => label.includes('ago'));
+    assert(Boolean(pastLabel), `past times still render with "ago" (got ${JSON.stringify(timeLabels)})`);
+
+    await context.settle();
+    await context.shot('accessibility-audit');
+  },
+
   async security(page, context) {
     await gotoRoute(page, '/issues');
     await page.waitForSelector('[data-issue-row]', { timeout: 15_000 });

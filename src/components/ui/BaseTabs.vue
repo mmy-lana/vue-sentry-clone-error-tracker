@@ -8,11 +8,18 @@ interface Props {
   ariaLabel?: string;
   /** Stretch tabs to fill the available width (segmented control look). */
   stretch?: boolean;
+  /**
+   * Optional stable id prefix so consumers can wire real tab panels:
+   * `id-prefix="settings"` yields `#settings-tab-0` and `#settings-panel-0`,
+   * which they bind to `id`, `role="tabpanel"` and `aria-labelledby`.
+   */
+  idPrefix?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   ariaLabel: 'Tabs',
-  stretch: false
+  stretch: false,
+  idPrefix: undefined
 });
 
 const emit = defineEmits<{
@@ -23,11 +30,11 @@ const baseId = useId();
 const tabRefs = ref<HTMLButtonElement[]>([]);
 
 function tabId(index: number): string {
-  return `${baseId}-tab-${index}`;
+  return props.idPrefix ? `${props.idPrefix}-tab-${index}` : `${baseId}-tab-${index}`;
 }
 
 function panelId(index: number): string {
-  return `${baseId}-panel-${index}`;
+  return props.idPrefix ? `${props.idPrefix}-panel-${index}` : `${baseId}-panel-${index}`;
 }
 
 function setActive(index: number): void {

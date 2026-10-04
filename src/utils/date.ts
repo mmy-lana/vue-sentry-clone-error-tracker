@@ -82,23 +82,21 @@ export function formatRelativeTime(timestamp: number, now: number = Date.now()):
 
   if (magnitude < 45 * SECOND_MS) return 'just now';
 
-  const suffix = delta >= 0 ? 'ago' : 'from now';
-  const prefix = delta >= 0 ? '' : 'in ';
+  // Past: "5m ago". Future (clock skew): "in 5m" - never both prepositions.
+  const unit =
+    magnitude < HOUR_MS
+      ? `${Math.floor(magnitude / MINUTE_MS)}m`
+      : magnitude < DAY_MS
+        ? `${Math.floor(magnitude / HOUR_MS)}h`
+        : magnitude < WEEK_MS
+          ? `${Math.floor(magnitude / DAY_MS)}d`
+          : magnitude < MONTH_MS
+            ? `${Math.floor(magnitude / WEEK_MS)}w`
+            : null;
 
-  if (magnitude < HOUR_MS) {
-    return `${prefix}${Math.floor(magnitude / MINUTE_MS)}m ${suffix}`;
-  }
-  if (magnitude < DAY_MS) {
-    return `${prefix}${Math.floor(magnitude / HOUR_MS)}h ${suffix}`;
-  }
-  if (magnitude < WEEK_MS) {
-    return `${prefix}${Math.floor(magnitude / DAY_MS)}d ${suffix}`;
-  }
-  if (magnitude < MONTH_MS) {
-    return `${prefix}${Math.floor(magnitude / WEEK_MS)}w ${suffix}`;
-  }
+  if (unit === null) return formatDate(timestamp);
 
-  return formatDate(timestamp);
+  return delta >= 0 ? `${unit} ago` : `in ${unit}`;
 }
 
 /** Full timestamp used inside tooltips and detail panels. */

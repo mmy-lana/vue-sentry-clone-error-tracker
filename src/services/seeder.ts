@@ -1,7 +1,6 @@
 import { db } from './db';
 import { calculate24HourBuckets, computeFingerprint } from '../utils/analytics';
 import { redactRequest } from '../utils/redaction';
-import { MINUTE_MS } from '../utils/date';
 import type { Breadcrumb, ErrorEvent, Issue, IssueStatus, StackFrame } from '../types';
 
 const HOUR = 3600000;
@@ -345,9 +344,9 @@ export async function seedInitialErrors(): Promise<SeedSummary> {
     for (let eventIndex = 0; eventIndex < scenario.eventCount; eventIndex += 1) {
       const user = SEEDED_USERS[(scenarioIndex + eventIndex) % scenario.userCount];
       const device = DEVICES[Math.floor(random() * DEVICES.length)];
-      const ageMs = Math.round(
-        random() * (23 * HOUR + 45 * MINUTE_MS)
-      );
+      // Kept strictly inside the hour-aligned 24h histogram window
+      // [floorToHour(now) - 23h, now] so bucket totals match event_count.
+      const ageMs = Math.round(random() * (23 * HOUR - 60_000));
       const timestamp = now - ageMs;
       timestamps.push(timestamp);
 

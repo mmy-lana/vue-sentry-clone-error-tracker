@@ -28,8 +28,21 @@ const inputRef = ref<HTMLInputElement | null>(null);
 const isOpen = ref<boolean>(false);
 const highlightedIndex = ref<number>(-1);
 
+/**
+ * Token the caret currently sits in.
+ *
+ * Matching the whole query string hid every chip as soon as a free-text term
+ * was present ("checkout level:" matched nothing); narrowing by the active token
+ * keeps the operators reachable inside multi-term queries.
+ */
+const activeToken = computed<string>(() => {
+  const caret = inputRef.value?.selectionStart ?? props.modelValue.length;
+  const before = props.modelValue.slice(0, caret);
+  return (before.match(/\S*$/)?.[0] ?? '').toLowerCase();
+});
+
 const filteredSuggestions = computed<string[]>(() => {
-  const needle = props.modelValue.trim().toLowerCase();
+  const needle = activeToken.value.trim();
   if (props.suggestions.length === 0) return [];
   if (needle.length === 0) return props.suggestions;
   return props.suggestions.filter((item) => item.toLowerCase().includes(needle));
@@ -41,12 +54,48 @@ function handleInput(event: Event): void {
   highlightedIndex.value = -1;
 }
 
+/**
+ * Replaces only the token the caret sits in and preserves every other fragment.
+ *
+ * A blind assignment wiped free-text searches whenever an operator chip was
+ * clicked; replacing the partially typed token keeps multi-term queries intact.
+ */
 function applySuggestion(value: string): void {
+  const input = inputRef.value;
+  const current = props.modelValue;
+
+  if (!input) {
+    emit('select', value);
+    emit('update:modelValue', value);
+    isOpen.value = false;
+    highlightedIndex.value = -1;
+    return;
+  }
+
+  const caret = Math.min(Math.max(input.selectionStart ?? current.length, 0), current.length);
+  const before = current.slice(0, caret);
+  const after = current.slice(caret);
+
+  const partialBefore = before.match(/(\S*)$/)?.[1] ?? '';
+  const partialAfter = after.match(/^(\S*)/)?.[1] ?? '';
+
+  const head = before.slice(0, before.length - partialBefore.length).trimEnd();
+  const tail = after.slice(partialAfter.length).trimStart();
+
+  const next = [head, value, tail].filter((part) => part.length > 0).join(' ');
+
   emit('select', value);
-  emit('update:modelValue', value);
+  emit('update:modelValue', next);
   isOpen.value = false;
   highlightedIndex.value = -1;
-  void nextTick(() => inputRef.value?.focus());
+
+  void nextTick(() => {
+    const field = inputRef.value;
+    if (!field) return;
+    field.focus();
+    const caretPosition = (head.length > 0 ? head.length + 1 : 0) + value.length;
+    field.setSelectionRange(caretPosition, caretPosition);
+  });
 }
 
 function clearQuery(): void {
