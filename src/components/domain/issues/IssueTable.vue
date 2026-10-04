@@ -35,9 +35,14 @@ const emit = defineEmits<{
 /**
  * Shared grid tracks for the header and every row:
  * checkbox | level/status | issue identity | 24h sparkline | events | users | last seen.
+ *
+ * Tablets keep the dense track set so the identity column never collapses
+ * below zero; from `xl` up the numeric tracks take their comfortable widths and
+ * the identity track is guaranteed a 280px floor before it starts absorbing the
+ * remaining container width.
  */
 const ISSUE_GRID_CLASSES =
-  'md:grid-cols-[auto_88px_minmax(0,1fr)_120px_88px_100px_90px]';
+  'md:grid-cols-[auto_72px_minmax(0,1fr)_96px_68px_80px_76px] xl:grid-cols-[auto_80px_minmax(280px,1fr)_128px_76px_96px_84px]';
 
 const COLUMNS: { field: IssueSortField; label: string }[] = [
   { field: 'event_count', label: 'Events' },
@@ -75,7 +80,7 @@ function isSelected(issueId: string): boolean {
       />
       <span v-else aria-hidden="true" />
 
-      <!-- Spacer keeps the fixed 88px level/status track. It must stay in flow:
+      <!-- Spacer keeps the fixed level/status track. It must stay in flow:
            `sr-only` is absolutely positioned and would shift every later header
            one column to the left. -->
       <span aria-hidden="true" />

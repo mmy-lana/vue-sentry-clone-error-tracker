@@ -64,7 +64,25 @@ const trendClass = computed<string>(() => {
     </div>
 
     <BaseTooltip v-if="hint" :content="hint" placement="top">
-      <span class="ml-auto shrink-0 cursor-help text-slate-600" aria-label="More information">?</span>
+      <button
+        type="button"
+        class="-mr-1 ml-auto shrink-0 cursor-help rounded p-1 text-slate-600 transition-colors hover:text-slate-300 focus:border-brand-500 focus:outline-none"
+        :aria-label="`More information: ${hint}`"
+        data-testid="stats-card-hint"
+      >
+        <svg
+          class="size-3.5"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="6.4" />
+          <path stroke-linecap="round" d="M8 7.4v3.4" />
+          <circle cx="8" cy="5" r="0.8" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
     </BaseTooltip>
   </div>
 </template>

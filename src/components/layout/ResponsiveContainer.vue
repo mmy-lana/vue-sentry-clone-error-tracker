@@ -26,12 +26,15 @@ const rootClass = computed<string[]>(() => [
   props.flushBottom ? '' : 'pb-24 md:pb-8'
 ]);
 
-/** Two-column split for the detail view from tablet width up. */
-const splitClass = computed<string>(() => (isDetailSplit.value ? 'xl:grid xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] xl:gap-4' : ''));
+/**
+ * The slot renders directly against the root element: a shell level split once
+ * squeezed every screen into 60% of the viewport and left a blank column beside
+ * it. Views that genuinely need two columns own their own inner grid.
+ */
 </script>
 
 <template>
   <component :is="as" :class="rootClass">
-    <div :class="splitClass"><slot /></div>
+    <slot />
   </component>
 </template>

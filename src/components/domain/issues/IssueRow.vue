@@ -31,7 +31,8 @@ const emit = defineEmits<{
 }>();
 
 /** Must stay identical to the header definition in IssueTable.vue. */
-const ISSUE_GRID_CLASSES = 'md:grid-cols-[auto_88px_minmax(0,1fr)_120px_88px_100px_90px]';
+const ISSUE_GRID_CLASSES =
+  'md:grid-cols-[auto_72px_minmax(0,1fr)_96px_68px_80px_76px] xl:grid-cols-[auto_80px_minmax(280px,1fr)_128px_76px_96px_84px]';
 
 const regressionLabel = computed<string>(() =>
   props.issue.regression_count > 0
@@ -143,12 +144,13 @@ function open(): void {
           type="button"
           class="block w-full truncate text-left text-sm font-medium text-slate-100 transition-colors hover:text-brand-200"
           :aria-label="`Open issue ${issue.title}`"
+          :title="issue.title"
           @click.stop="open"
         >
           {{ issue.title }}
         </button>
         <p class="mt-0.5 flex items-center gap-2 truncate font-mono text-[11px] text-slate-500">
-          <span class="truncate">{{ issue.culprit }}</span>
+          <span class="truncate" :title="issue.culprit">{{ issue.culprit }}</span>
           <BaseTooltip :content="`First seen ${durationLabel} before the latest event`" placement="top">
             <span class="shrink-0 text-slate-600">·</span>
           </BaseTooltip>
